@@ -148,3 +148,39 @@ Our validation pipeline leverages the following local dataset:
       └── leica.txt        # raw Leica MS60 coordinate records
   ```
 
+---
+
+## 6. Weights Organization & Git Tracking
+
+To keep the repository clean and avoid committing large binary PyTorch models while keeping the C++ production model tracked:
+* **Tracked Model**: `weights/best.onnx` (ONNX model, ~10.5 MB, used directly by C++ inference).
+* **Ignored Weights**: `weights/*.pt` (PyTorch model weights used for training/validation in Python, excluded via `.gitignore`).
+
+---
+
+## 7. Model Training & Validation Guide
+
+### How to Train the YOLO-Pose Model
+To re-run the training process on the synthetic dataset:
+```bash
+# Ensure the virtual environment is used
+venv/bin/python simulation/train_yolo.py
+```
+This script downloads a base model, trains on `datasets/yolo_gate/` (synthesized automatically from UZH background frames and fisheye parameters), and exports the model to ONNX.
+
+### How to Test on Real UZH-FPV Images
+To run inference on the raw UZH-FPV images and inspect results:
+```bash
+venv/bin/python simulation/test_on_uzh.py
+```
+
+* **Quantitative Log**: Output coordinates and confidence scores are written to `simulation/runs/uzh_test_results.txt`.
+* **Visual Verification**: Annotated frames with bounding box and gate corner overlays are saved to `simulation/runs/detections/`.
+
+### Validation Results (Real-World Test)
+When tested on the raw, real-world FPV frames (sampling every 20th frame):
+* **Model Used**: `weights/best.pt`
+* **Real Frames with Gate Detections**: 10 frames out of 105 tested (confidence > 0.5)
+* **Max Detection Confidence**: **78.3%** on `image_0_322.png` (proving successful Sim-to-Real domain transfer).
+
+

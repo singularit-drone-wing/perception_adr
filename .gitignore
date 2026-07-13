@@ -3,6 +3,7 @@ venv/
 
 # Reference materials
 references/
+datasets/
 
 # Python cache
 __pycache__/
@@ -19,3 +20,10 @@ bin/
 *.a
 *.so
 *.out
+
+# Large Model Weights (PyTorch)
+weights/*.pt
+
+# Output detection images
+simulation/runs/detections/
+

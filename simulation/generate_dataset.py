@@ -18,8 +18,13 @@ class GateDatasetGenerator:
         ], dtype=np.float32)
         
         # Camera to Body Frame extrinsics (Default: Camera is 5cm forward from drone center)
-        self.R_CB = np.eye(3, dtype=np.float32)  # Assumed aligned for simplicity
-        self.t_CB = np.array([0.05, 0.0, 0.0], dtype=np.float32) 
+        # R_CB transforms from body (X-forward, Y-left, Z-up) to camera (Z-optical, X-right, Y-down)
+        self.R_CB = np.array([
+            [ 0.0, -1.0,  0.0],
+            [ 0.0,  0.0, -1.0],
+            [ 1.0,  0.0,  0.0]
+        ], dtype=np.float32)
+        self.t_CB = np.array([0.0, 0.0, 0.05], dtype=np.float32) 
 
     def project_3d_to_2d(self, p_W_corners, p_W_drone, R_W_drone):
         """
