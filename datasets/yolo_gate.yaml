@@ -1,0 +1,9 @@
+# YOLO-Pose Gate Dataset Configuration
+path: /home/aaron/Documents/perception/datasets/yolo_gate # dataset root dir
+train: images/train
+val: images/val
+
+# Keypoints: 4 inner gate corners (Top-Left, Top-Right, Bottom-Right, Bottom-Left)
+kpt_shape: [4, 3] # [number of keypoints, number of dimensions (x, y, visibility)]
+names:
+  0: gate
