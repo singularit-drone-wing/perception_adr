@@ -1,0 +1,21 @@
+# Virtual Environment
+venv/
+
+# Reference materials
+references/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# C++ Build outputs
+build/
+bin/
+*.o
+*.a
+*.so
+*.out
