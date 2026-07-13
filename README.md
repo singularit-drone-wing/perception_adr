@@ -90,12 +90,31 @@ The C++ VIO pipeline communicates with the Python-based drone simulator (Crazyfl
 
 ---
 
-## 4. Development Roadmap
+## 4. Development Roadmap & Implementation Details
 
-- [ ] **Phase 1: Synthetic Dataset & YOLO-Pose Training**
-  - [ ] Write Python simulator image collection script.
-  - [ ] Auto-label keypoints based on simulator ground-truth gate corners.
-  - [ ] Train YOLO-Pose model (PyTorch) and export to ONNX format.
+- [x] **Phase 1: Synthetic Dataset & YOLO-Pose Training**
+  - [x] Write Python synthetic data generator using raw UZH background frames.
+  - [x] Auto-project 3D gate corners using Kannala-Brandt fisheye camera distortion.
+  - [x] Write training script (`simulation/train_yolo.py`) to train the model and export to ONNX.
+
+### Phase 1 Technical Details
+
+#### 1. Synthetic Dataset Generation (`simulation/generate_synthetic_gates.py`)
+To train YOLO-Pose without manual labeling, we synthesize a training dataset directly from the UZH-FPV background images:
+* **Backgrounds**: We sample raw frames from the UZH dataset where the gate is not visible or use arbitrary scenes.
+* **3D Gate Projection**: A virtual square gate ($1.5\text{m} \times 1.5\text{m}$ with a $0.08\text{m}$ border thickness) is placed in 3D relative to the camera frame ($Z$-forward, $X$-right, $Y$-down).
+* **Fisheye Lens Distortion**: To match the real Davis240C camera lens, we project the 3D corners onto the 2D plane using the **Kannala-Brandt (equidistant) distortion model**:
+  $$\theta = \arctan(r)$$
+  $$\theta_d = \theta(1 + k_1\theta^2 + k_2\theta^4 + k_3\theta^6 + k_4\theta^8)$$
+  where $k_1, k_2, k_3, k_4$ are the calibrated distortion coefficients.
+* **Augmentations**: Randomizes rotation, translation, gate color intensity, and applies Gaussian/motion blur to simulate high-speed flight.
+* **Output**: Writes 1,200 training and 150 validation images directly in YOLO-Pose format (`class_idx x_center y_center w h kp1_x kp1_y kp1_v ...`) to `datasets/yolo_gate/`.
+
+#### 2. YOLO-Pose Training (`simulation/train_yolo.py`)
+* Loads the lightweight `yolo11n-pose.pt` model.
+* Trains on the synthetic dataset for 30 epochs (automatically selecting CUDA if available).
+* Exports the final model to **ONNX format** with dynamic axes, ready to be loaded by the C++ pipeline.
+
 - [ ] **Phase 2: C++ Pipeline Core**
   - [ ] Implement thread-safe queues and ring buffers.
   - [ ] Integrate ONNX Runtime for YOLO-Pose inference.
@@ -106,3 +125,26 @@ The C++ VIO pipeline communicates with the Python-based drone simulator (Crazyfl
 - [ ] **Phase 4: Closed-Loop Simulation Testing**
   - [ ] Set up UDP socket communications.
   - [ ] Run test flights in Python simulator using C++ estimates.
+
+---
+
+## 5. UZH-FPV Dataset Details
+
+Our validation pipeline leverages the following local dataset:
+
+* **Dataset Reference**: [UZH-FPV Quadcopter Dataset: Indoor Forward-Facing (DAVIS-3 APS) Baseline](https://fpv.ifi.uzh.ch/datasets/)
+* **Visual Sensor**: Monochromatic APS (Active Pixel Sensor) global shutter frames (640x480 resolution) extracted from a neuromorphic DAVIS240C camera sensor.
+* **IMU & Ground-Truth**: High-rate (~500 Hz) IMU linear accelerations and angular velocities synchronized with millimeter-accurate Leica laser optical ground truth.
+* **Directory Structure**:
+  ```text
+  datasets/
+  └── uzh-fpv-indoor-forward-davis3/
+      ├── calib/           # Sensor chain camera & IMU calibration (YAML)
+      ├── events.txt       # Event stream log (optional)
+      ├── groundtruth.txt  # Leica-sync 6DoF Ground Truth poses
+      ├── images.txt       # Frame timestamp-to-file index mapping
+      ├── img/             # Folder containing raw camera frame images (.png)
+      ├── imu.txt          # High frequency 500Hz Accelerometer & Gyro logs
+      └── leica.txt        # raw Leica MS60 coordinate records
+  ```
+
