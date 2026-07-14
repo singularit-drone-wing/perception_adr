@@ -209,9 +209,37 @@ This test:
 2. Extracts 2D gate corners, undistorts them, solves PnP, and transforms them into global coordinates.
 3. Outputs the estimated drone state vector measurements.
 4. Performs verification tests on the EKF RingBuffer's SLERP interpolation.
-- [ ] **Phase 3: EKF State Fusion**
-  - [ ] Implement RK4 IMU kinematics integrator.
-  - [ ] Implement EKF update step with delay compensation.
+- [x] **Phase 3: EKF State Fusion**
+  - [x] Implement RK4 IMU kinematics integrator.
+  - [x] Implement EKF update step with delay compensation.
+
+#### Phase 3 Technical Details
+
+The EKF sensor fusion pipeline is implemented in [ekf.h](file:///home/aaron/Documents/perception/cpp_pipeline/include/ekf.h) and [ekf.cpp](file:///home/aaron/Documents/perception/cpp_pipeline/src/ekf.cpp).
+
+##### 1. State Representation & Covariance
+* **Nominal State**: Fuses accelerometer and gyroscope readings to maintain a 16D state vector containing 3D position ($p_{WB}$), 3D velocity ($v_W$), unit quaternion attitude ($q_{WB}$), 3D accelerometer bias ($b_a$), and 3D gyroscope bias ($b_g$).
+* **Error State (15D)**: Tracks position error ($\delta p$), velocity error ($\delta v$), orientation error ($\delta \theta$), accelerometer bias error ($\delta b_a$), and gyroscope bias error ($\delta b_g$).
+* **Covariance propagation**: Uses a 15x15 error covariance matrix $P$.
+
+##### 2. Runge-Kutta 4th Order Kinematic Integration (`predict()`)
+Computes nominal state propagation by integrating continuous equations of motion over a micro-timestep $dt$ using RK4:
+* Zero-mean bias-corrected inputs: $a_{corr} = a_{raw} - b_a$, and $\omega_{corr} = \omega_{raw} - b_g$.
+* State derivative equations:
+  * $\dot{p} = v$
+  * $\dot{v} = R(q_{WB}) a_{corr} + g_W$ (NED world gravity $g_W = [0, 0, 9.81]^T$)
+  * $\dot{q} = \frac{1}{2} q_{WB} \otimes \omega_{corr}$
+* Transition matrix propagation: Updates $P_{k} = F P_{k-1} F^T + Q$ with error-state transition matrix $F$ and discrete-time process noise $Q$.
+
+##### 3. Joseph-Form Measurement Update (`update()`)
+Executes Kalman correction using delay-compensated pose measurements:
+* **Residual calculation**: Computes 6D innovation residual $y$:
+  * Position residual: $y_p = p_{meas} - p_{hist}$
+  * Orientation residual: $y_\theta = 2 \cdot \text{vec}(q_{hist}^{-1} \otimes q_{meas})$ (with negative coefficient correction for shortest path rotation).
+* **Kalman Gain**: Computes $K = P H^T (H P H^T + R)^{-1}$ using a 6x15 measurement Jacobian matrix $H$ and 6x6 measurement noise matrix $R$.
+* **Joseph-Form Covariance Update**: Ensures numerical stability and matrix symmetry:
+  $$P \leftarrow (I - KH) P (I - KH)^T + K R K^T$$
+  $$P \leftarrow \frac{1}{2} (P + P^T)$$
 - [ ] **Phase 4: Closed-Loop Simulation Testing**
   - [ ] Set up UDP socket communications.
   - [ ] Run test flights in Python simulator using C++ estimates.

@@ -33,6 +33,7 @@ endif()
 # Build the core pipeline static library
 add_library(perception_pipeline STATIC
     src/vision_pipeline.cpp
+    src/ekf.cpp
 )
 
 # Set include directories

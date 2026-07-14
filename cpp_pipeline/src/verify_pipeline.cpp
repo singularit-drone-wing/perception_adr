@@ -1,5 +1,6 @@
 #include "vision_pipeline.h"
 #include "pipeline_utils.h"
+#include "ekf.h"
 #include <iostream>
 #include <iomanip>
 #include <opencv2/highgui.hpp>
@@ -10,9 +11,9 @@ int main(int argc, char** argv) {
     std::cout << "Autonomous Drone Racing C++ Pipeline Verification" << std::endl;
     std::cout << "=========================================" << std::endl;
 
-    // Define file paths
-    std::string model_path = "../weights/best.onnx";
-    std::string image_path = "../datasets/uzh-fpv-indoor-forward-davis3/img/image_0_322.png";
+    // Define file paths (relative to cpp_pipeline/build/ where the binary is run)
+    std::string model_path = "../../weights/best.onnx";
+    std::string image_path = "../../datasets/uzh-fpv-indoor-forward-davis3/img/image_0_322.png";
 
     if (argc > 1) {
         model_path = argv[1];
@@ -124,6 +125,51 @@ int main(int argc, char** argv) {
                   << interp_state->position.z() << "]" << std::endl;
     } else {
         std::cerr << "  - Interpolation failed!" << std::endl;
+    }
+
+    // 6. Verify EKF functionality (propagation and correction)
+    std::cout << "[Test] Verifying EKF propagation and update..." << std::endl;
+    EKF ekf;
+
+    // Set initial kinematic state
+    KinematicState init_state;
+    init_state.timestamp = timestamp;
+    init_state.position = Eigen::Vector3d(0.0, 0.0, 0.0);
+    init_state.velocity = Eigen::Vector3d(0.1, 0.0, 0.0);
+    init_state.quaternion = Eigen::Quaterniond::Identity();
+    init_state.acc_bias = Eigen::Vector3d(0.01, -0.01, 0.02);
+    init_state.gyro_bias = Eigen::Vector3d(0.001, -0.001, 0.002);
+    ekf.set_state(init_state);
+
+    // Predict forward by 10ms with mock IMU readings (accel includes gravity, bias, and positive vertical acceleration)
+    Eigen::Vector3d mock_acc(0.1, 0.0, 9.81 + 0.2 + 0.01); 
+    Eigen::Vector3d mock_gyro(0.01, -0.01, 0.02);
+    double predict_dt = 0.01;
+    ekf.predict(mock_acc, mock_gyro, predict_dt);
+
+    auto pred_state = ekf.get_state(timestamp + predict_dt);
+    std::cout << "  - EKF Predict Position: [" 
+              << pred_state.position.x() << ", " 
+              << pred_state.position.y() << ", " 
+              << pred_state.position.z() << "]" << std::endl;
+
+    // Apply EKF correction update using the vision measurement
+    if (success) {
+        bool update_success = ekf.update(measurement, pred_state);
+        if (update_success) {
+            auto corrected_state = ekf.get_state(timestamp + predict_dt);
+            std::cout << "  - EKF Update Success!" << std::endl;
+            std::cout << "  - Corrected Position: [" 
+                      << corrected_state.position.x() << ", " 
+                      << corrected_state.position.y() << ", " 
+                      << corrected_state.position.z() << "]" << std::endl;
+            std::cout << "  - Corrected Acc Bias: [" 
+                      << corrected_state.acc_bias.x() << ", " 
+                      << corrected_state.acc_bias.y() << ", " 
+                      << corrected_state.acc_bias.z() << "]" << std::endl;
+        } else {
+            std::cerr << "  - EKF Update failed!" << std::endl;
+        }
     }
 
     std::cout << "=========================================" << std::endl;
