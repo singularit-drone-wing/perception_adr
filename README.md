@@ -115,6 +115,24 @@ To train YOLO-Pose without manual labeling, we synthesize a training dataset dir
 * Trains on the synthetic dataset for 30 epochs (automatically selecting CUDA if available).
 * Exports the final model to **ONNX format** with dynamic axes, ready to be loaded by the C++ pipeline.
 
+##### Training Metrics & Progress
+
+The table below summarizes the key training and validation metrics recorded across the 30 epochs (from [results.csv](file:///home/aaron/Documents/perception/simulation/runs/results.csv)):
+
+| Epoch | Train Box Loss | Val Box Loss | Train Pose/Keypoint Loss | Val Pose/Keypoint Loss | Box mAP50 | Box mAP50-95 | Pose mAP50 | Pose mAP50-95 |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 1 | 1.1984 | 0.7089 | 3.6466 | 2.2203 | 0.9572 | 0.8129 | 0.9572 | 0.5018 |
+| 5 | 0.6624 | 0.5227 | 0.4967 | 0.2752 | 0.9944 | 0.8804 | 0.9944 | 0.9711 |
+| 10 | 0.5578 | 0.4340 | 0.3349 | 0.1506 | 0.9949 | 0.9102 | 0.9949 | 0.9914 |
+| 15 | 0.5011 | 0.3658 | 0.2624 | 0.1113 | 0.9950 | 0.9302 | 0.9950 | 0.9926 |
+| 20 | 0.4392 | 0.3146 | 0.2068 | 0.0816 | 0.9950 | 0.9595 | 0.9950 | 0.9929 |
+| 25 | 0.2805 | 0.2742 | 0.0677 | 0.0631 | 0.9950 | 0.9683 | 0.9950 | 0.9944 |
+| 30 | 0.2343 | 0.2322 | 0.0540 | 0.0465 | 0.9950 | 0.9781 | 0.9950 | 0.9950 |
+
+> [!NOTE]
+> * The final model achieves **97.8%** Box mAP50-95 and **99.5%** Pose/Keypoint mAP50-95 on the validation set, demonstrating high precision on synthetic data before deploying to the C++ pipeline.
+> * A visual plot of all metrics is saved at [results.png](file:///home/aaron/Documents/perception/simulation/runs/results.png).
+
 - [ ] **Phase 2: C++ Pipeline Core**
   - [ ] Implement thread-safe queues and ring buffers.
   - [ ] Integrate ONNX Runtime for YOLO-Pose inference.
