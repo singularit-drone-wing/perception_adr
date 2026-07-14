@@ -77,15 +77,14 @@ VisionPipeline::VisionPipeline(const std::string& model_path,
     };
 }
 
-bool VisionPipeline::process_frame(const cv::Mat& crop_img,
-                                   float crop_x_offset,
-                                   float crop_y_offset,
-                                   float original_width,
-                                   float original_height,
-                                   const Eigen::Vector3d& gate_world_pos,
-                                   const Eigen::Quaterniond& gate_world_rot,
-                                   double timestamp,
-                                   PoseMeasurement& measurement) {
+bool VisionPipeline::detect_and_solve_relative_pose(const cv::Mat& crop_img,
+                                                    float crop_x_offset,
+                                                    float crop_y_offset,
+                                                    float original_width,
+                                                    float original_height,
+                                                    Eigen::Matrix3d& R_rel,
+                                                    Eigen::Vector3d& t_rel,
+                                                    float& confidence) {
     if (crop_img.empty()) {
         return false;
     }
@@ -192,7 +191,7 @@ bool VisionPipeline::process_frame(const cv::Mat& crop_img,
 
     // Use the detection with the highest confidence
     int best_idx = nms_indices[0];
-    float best_conf = scores[best_idx];
+    confidence = scores[best_idx];
 
     // Scale and translate the 4 keypoints back to full-frame coordinates
     float scale_x = original_width / static_cast<float>(target_w);
@@ -227,18 +226,35 @@ bool VisionPipeline::process_frame(const cv::Mat& crop_img,
 
     if (!pnp_success) return false;
 
-    // ==========================================
-    // Step 5: Absolute Pose Reconstruction (Fusing Extrinsics)
-    // ==========================================
     cv::Mat R_rel_mat;
     cv::Rodrigues(rvec, R_rel_mat);
 
-    Eigen::Matrix3d R_rel;
     R_rel << R_rel_mat.at<double>(0, 0), R_rel_mat.at<double>(0, 1), R_rel_mat.at<double>(0, 2),
              R_rel_mat.at<double>(1, 0), R_rel_mat.at<double>(1, 1), R_rel_mat.at<double>(1, 2),
              R_rel_mat.at<double>(2, 0), R_rel_mat.at<double>(2, 1), R_rel_mat.at<double>(2, 2);
 
-    Eigen::Vector3d t_rel(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
+    t_rel = Eigen::Vector3d(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
+
+    return true;
+}
+
+bool VisionPipeline::process_frame(const cv::Mat& crop_img,
+                                   float crop_x_offset,
+                                   float crop_y_offset,
+                                   float original_width,
+                                   float original_height,
+                                   const Eigen::Vector3d& gate_world_pos,
+                                   const Eigen::Quaterniond& gate_world_rot,
+                                   double timestamp,
+                                   PoseMeasurement& measurement) {
+    Eigen::Matrix3d R_rel;
+    Eigen::Vector3d t_rel;
+    float conf = 0.0f;
+    
+    if (!detect_and_solve_relative_pose(crop_img, crop_x_offset, crop_y_offset, original_width, original_height,
+                                        R_rel, t_rel, conf)) {
+        return false;
+    }
 
     // Drone rotation R_WB = R_world_gate * R_rel^T * R_CB
     Eigen::Matrix3d R_world_gate = gate_world_rot.toRotationMatrix();
@@ -252,7 +268,67 @@ bool VisionPipeline::process_frame(const cv::Mat& crop_img,
     measurement.timestamp = timestamp;
     measurement.position = p_meas;
     measurement.quaternion = Eigen::Quaterniond(R_meas).normalized();
-    measurement.confidence = best_conf;
+    measurement.confidence = conf;
+
+    return true;
+}
+
+bool VisionPipeline::process_frame_with_gate_matching(
+    const cv::Mat& crop_img,
+    float crop_x_offset,
+    float crop_y_offset,
+    float original_width,
+    float original_height,
+    const std::vector<std::pair<Eigen::Vector3d, Eigen::Quaterniond>>& gate_map,
+    const Eigen::Vector3d& predicted_drone_pos,
+    double timestamp,
+    double max_match_distance,
+    PoseMeasurement& measurement) {
+
+    Eigen::Matrix3d R_rel;
+    Eigen::Vector3d t_rel;
+    float conf = 0.0f;
+    
+    if (!detect_and_solve_relative_pose(crop_img, crop_x_offset, crop_y_offset, original_width, original_height,
+                                        R_rel, t_rel, conf)) {
+        return false;
+    }
+
+    // Match detected gate to map entry producing a position closest to predicted drone pos (EKF estimate)
+    double min_distance = std::numeric_limits<double>::max();
+    int best_gate_idx = -1;
+    Eigen::Matrix3d best_R_meas;
+    Eigen::Vector3d best_p_meas;
+
+    for (size_t i = 0; i < gate_map.size(); ++i) {
+        const auto& gate_pos = gate_map[i].first;
+        const auto& gate_rot = gate_map[i].second;
+
+        Eigen::Matrix3d R_world_gate = gate_rot.toRotationMatrix();
+        Eigen::Matrix3d R_meas = R_world_gate * R_rel.transpose() * R_CB_;
+        
+        Eigen::Vector3d p_B_gate = R_CB_.transpose() * (t_rel - t_CB_);
+        Eigen::Vector3d p_meas = gate_pos - R_meas * p_B_gate;
+
+        double distance = (p_meas - predicted_drone_pos).norm();
+        if (distance < min_distance) {
+            min_distance = distance;
+            best_gate_idx = static_cast<int>(i);
+            best_R_meas = R_meas;
+            best_p_meas = p_meas;
+        }
+    }
+
+    // Perform outlier rejection based on prediction distance threshold
+    if (best_gate_idx == -1 || min_distance > max_match_distance) {
+        return false;
+    }
+
+    // Output measurements for the best matched gate
+    measurement.timestamp = timestamp;
+    measurement.position = best_p_meas;
+    measurement.quaternion = Eigen::Quaterniond(best_R_meas).normalized();
+    measurement.confidence = conf;
 
     return true;
 }

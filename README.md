@@ -159,19 +159,18 @@ Consolidates all structures and thread-safe buffers required for cross-thread da
   * `insert(const KinematicState& state)`: Enforces monotonic timestamps and appends a new predicted state to the deque, popping old elements to maintain a maximum size of 2000.
   * `get_state_at(double timestamp)`: Performs binary search (`std::lower_bound`) to find the two closest states. Translates position, velocity, and biases using linear interpolation, and rotates attitude using Spherical Linear Interpolation (**SLERP**), returning the latency-compensated historical state.
 
-##### B. Unified Vision Pipeline ([vision_pipeline.h](file:///home/aaron/Documents/perception/cpp_pipeline/include/vision_pipeline.h) / [vision_pipeline.cpp](file:///home/aaron/Documents/perception/cpp_pipeline/src/vision_pipeline.cpp))
-Implements the `VisionPipeline` class, merging YOLO-Pose ONNX inference and PnP localization:
+###### B. Unified Vision Pipeline ([vision_pipeline.h](file:///home/aaron/Documents/perception/cpp_pipeline/include/vision_pipeline.h) / [vision_pipeline.cpp](file:///home/aaron/Documents/perception/cpp_pipeline/src/vision_pipeline.cpp))
+Implements the `VisionPipeline` class, merging YOLO-Pose ONNX inference, PnP localization, and gate matching:
 * **`VisionPipeline(...)`**: Constructor that initializes ONNX Runtime Session, extracts input/output node dimensions, and defines the local 3D inner gate corners ($1.5\text{m} \times 1.5\text{m}$ inner dimensions).
-* **`process_frame(...)`**:
-  * **Preprocessing**: Resizes the input crop to $320 \times 320$, normalizes to `[0.0, 1.0]`, swaps BGR to RGB, and reshapes it to CHW layout.
-  * **ONNX Inference**: Runs the model to retrieve the output tensor.
-  * **NMS & Keypoint Scale-Back**: Traverses output anchors, filters candidates using Non-Maximum Suppression (`cv::dnn::NMSBoxes`), scales the best candidate's keypoints back to crop coordinates, and maps them to full-frame space.
-  * **Fisheye Undistortion**: Corrects 2D corners for equidistant distortion using `cv::fisheye::undistortPoints` to project keypoints into pinhole space.
-  * **PnP Solving**: Resolves relative camera-to-gate rotation and translation ($R_{rel}$, $t_{rel}$) using the IPPE solver (`cv::solvePnP` with `cv::SOLVEPNP_IPPE`).
-  * **Extrinsic Fusion**: Computes the global drone pose ($p_{meas}$, $q_{meas}$) using camera-to-body extrinsics ($R_{CB}$, $t_{CB}$) and populates the `PoseMeasurement` structure.
+* **`detect_and_solve_relative_pose(...)`** (Private Helper): Executes preprocessing, model execution, NMS candidate filtering, keypoint scaling to full-frame space, equidistant distortion correction (`cv::fisheye::undistortPoints`), and IPPE PnP relative transform solving ($R_{rel}$, $t_{rel}$).
+* **`process_frame(...)`**: Fuses relative transform with camera-to-body extrinsics ($R_{CB}$, $t_{CB}$) and a specific known gate pose to yield absolute drone pose ($p_{meas}$, $q_{meas}$).
+* **`process_frame_with_gate_matching(...)`**: Takes the pre-loaded track map and EKF predicted drone position ($p_{pred}$). Fuses the relative transform with all gate poses in the track map and selects the gate that minimizes $\|p_{meas} - p_{pred}\|$. Outliers are rejected if this distance exceeds a threshold (`max_match_distance`).
 
 ##### C. Verification Runner ([verify_pipeline.cpp](file:///home/aaron/Documents/perception/cpp_pipeline/src/verify_pipeline.cpp))
-* **`main(...)`**: Loads the camera matrix $K$ and equidistant distortion coefficients $D$. Fills the camera-to-body extrinsics $R_{CB}$ and $t_{CB}$. Loads the test frame [image_0_322.png](file:///home/aaron/Documents/perception/datasets/uzh-fpv-indoor-forward-davis3/img/image_0_322.png) containing a visible gate. Invokes `process_frame` to output the estimated drone position and orientation, and verifies `RingBuffer` interpolation.
+* **`main(...)`**: Loads parameters and the test frame [image_0_322.png](file:///home/aaron/Documents/perception/datasets/uzh-fpv-indoor-forward-davis3/img/image_0_322.png). Invokes:
+  1. `process_frame` using a known gate target.
+  2. `process_frame_with_gate_matching` using a candidate gate map to perform closest-state nearest-gate lookup.
+  3. `RingBuffer` and `EKF` test propagations and updates.
 
 ---
 

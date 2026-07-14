@@ -41,7 +41,36 @@ public:
                        double timestamp,
                        PoseMeasurement& measurement);
 
+    // Processes the frame and matches the detected gate against a pre-loaded gate map.
+    // Uses closest-state matching based on EKF predicted drone position to resolve which gate is visible.
+    // Inputs:
+    //   - gate_map: vector of pairs, each containing (position, orientation) of all gates on the track
+    //   - predicted_drone_pos: EKF predicted position (p_pred) for closest-state gate matching
+    //   - max_match_distance: Maximum allowed distance between measured and predicted pose for outlier rejection
+    // Returns: true if gate was successfully matched and pose resolved, false otherwise.
+    bool process_frame_with_gate_matching(
+        const cv::Mat& crop_img,
+        float crop_x_offset,
+        float crop_y_offset,
+        float original_width,
+        float original_height,
+        const std::vector<std::pair<Eigen::Vector3d, Eigen::Quaterniond>>& gate_map,
+        const Eigen::Vector3d& predicted_drone_pos,
+        double timestamp,
+        double max_match_distance,
+        PoseMeasurement& measurement);
+
 private:
+    // Runs preprocessing, YOLO inference, NMS, undistortion, and relative PnP solving
+    bool detect_and_solve_relative_pose(const cv::Mat& crop_img,
+                                        float crop_x_offset,
+                                        float crop_y_offset,
+                                        float original_width,
+                                        float original_height,
+                                        Eigen::Matrix3d& R_rel,
+                                        Eigen::Vector3d& t_rel,
+                                        float& confidence);
+
     // Vision & Solver settings
     float conf_threshold_;
     float nms_threshold_;

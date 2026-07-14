@@ -98,6 +98,32 @@ int main(int argc, char** argv) {
         std::cerr << "[Pipeline] Error: Vision pipeline failed to resolve pose. No gate detected above threshold." << std::endl;
     }
 
+    // 4b. Run the VisionPipeline with Gate Matching
+    std::cout << "[Pipeline] Running Gate Matching with pre-loaded map..." << std::endl;
+    std::vector<std::pair<Eigen::Vector3d, Eigen::Quaterniond>> gate_map = {
+        { Eigen::Vector3d(10.0, 10.0, 10.0), Eigen::Quaterniond::Identity() }, // Gate 0 (far away)
+        { Eigen::Vector3d(0.0, 0.0, 3.0), Eigen::Quaterniond::Identity() },    // Gate 1 (correct gate)
+        { Eigen::Vector3d(-5.0, 0.0, 5.0), Eigen::Quaterniond::Identity() }    // Gate 2 (wrong gate)
+    };
+    Eigen::Vector3d predicted_drone_pos(0.0, 0.0, 0.0);
+    double max_match_distance = 15.0; // 15 meters threshold
+
+    PoseMeasurement matched_measurement;
+    bool match_success = pipeline->process_frame_with_gate_matching(
+        img, crop_x_offset, crop_y_offset, original_width, original_height,
+        gate_map, predicted_drone_pos, timestamp, max_match_distance, matched_measurement);
+
+    if (match_success) {
+        std::cout << "[Pipeline] Gate Matching Success!" << std::endl;
+        std::cout << "  - Visual Confidence: " << std::fixed << std::setprecision(2) << matched_measurement.confidence * 100.0 << "%" << std::endl;
+        std::cout << "  - Matched Drone Position (p_meas): [" 
+                  << std::setprecision(4) << matched_measurement.position.x() << ", " 
+                  << matched_measurement.position.y() << ", " 
+                  << matched_measurement.position.z() << "] meters" << std::endl;
+    } else {
+        std::cerr << "[Pipeline] Error: Gate matching failed." << std::endl;
+    }
+
     // 5. Verify concurrent structures (ThreadSafeQueue and RingBuffer)
     std::cout << "[Test] Verifying RingBuffer functionality..." << std::endl;
     RingBuffer ring_buffer(10);
