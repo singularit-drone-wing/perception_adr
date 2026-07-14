@@ -133,10 +133,82 @@ The table below summarizes the key training and validation metrics recorded acro
 > * The final model achieves **97.8%** Box mAP50-95 and **99.5%** Pose/Keypoint mAP50-95 on the validation set, demonstrating high precision on synthetic data before deploying to the C++ pipeline.
 > * A visual plot of all metrics is saved at [results.png](file:///home/aaron/Documents/perception/simulation/runs/results.png).
 
-- [ ] **Phase 2: C++ Pipeline Core**
-  - [ ] Implement thread-safe queues and ring buffers.
-  - [ ] Integrate ONNX Runtime for YOLO-Pose inference.
-  - [ ] Implement OpenCV PnP localization solver.
+- [x] **Phase 2: C++ Pipeline Core**
+  - [x] Implement thread-safe queues and ring buffers.
+  - [x] Integrate ONNX Runtime for YOLO-Pose inference.
+  - [x] Implement OpenCV PnP localization solver.
+
+#### Phase 2 Technical Details
+
+The core C++ components are implemented in the [cpp_pipeline](file:///home/aaron/Documents/perception/cpp_pipeline) directory.
+
+#### 1. File-Wise & Function-Wise Architecture
+
+##### A. Shared Types & Concurrency Buffers ([pipeline_utils.h](file:///home/aaron/Documents/perception/cpp_pipeline/include/pipeline_utils.h))
+Consolidates all structures and thread-safe buffers required for cross-thread data propagation:
+* **Common Structs**:
+  * `DetectionResult`: Holds `cv::Rect bbox`, float `confidence`, and `std::vector<cv::Point2f> keypoints` (4 corners: Top-Left, Top-Right, Bottom-Right, Bottom-Left).
+  * `PoseMeasurement`: Holds the computed 3D global position (`Eigen::Vector3d position`) and attitude (`Eigen::Quaterniond quaternion`) representing $z_{meas}$ at a given `double timestamp`.
+  * `KinematicState`: Holds the 16D EKF state vectors. Contains `to_vector()` and `from_vector()` to convert to/from raw `Eigen::Matrix<double, 16, 1>` vectors.
+* **`ThreadSafeQueue<T>`**:
+  * `push(const T& value)` / `push(T&& value)`: Mutex-locked push that notifies waiting threads via `std::condition_variable`.
+  * `pop()`: Blocking pop that waits until elements are available.
+  * `pop_with_timeout(std::chrono::milliseconds timeout)`: Blocks with timeout, returning `std::nullopt` if it expires.
+  * `try_pop()`: Non-blocking pop.
+* **`RingBuffer`**:
+  * `insert(const KinematicState& state)`: Enforces monotonic timestamps and appends a new predicted state to the deque, popping old elements to maintain a maximum size of 2000.
+  * `get_state_at(double timestamp)`: Performs binary search (`std::lower_bound`) to find the two closest states. Translates position, velocity, and biases using linear interpolation, and rotates attitude using Spherical Linear Interpolation (**SLERP**), returning the latency-compensated historical state.
+
+##### B. Unified Vision Pipeline ([vision_pipeline.h](file:///home/aaron/Documents/perception/cpp_pipeline/include/vision_pipeline.h) / [vision_pipeline.cpp](file:///home/aaron/Documents/perception/cpp_pipeline/src/vision_pipeline.cpp))
+Implements the `VisionPipeline` class, merging YOLO-Pose ONNX inference and PnP localization:
+* **`VisionPipeline(...)`**: Constructor that initializes ONNX Runtime Session, extracts input/output node dimensions, and defines the local 3D inner gate corners ($1.5\text{m} \times 1.5\text{m}$ inner dimensions).
+* **`process_frame(...)`**:
+  * **Preprocessing**: Resizes the input crop to $320 \times 320$, normalizes to `[0.0, 1.0]`, swaps BGR to RGB, and reshapes it to CHW layout.
+  * **ONNX Inference**: Runs the model to retrieve the output tensor.
+  * **NMS & Keypoint Scale-Back**: Traverses output anchors, filters candidates using Non-Maximum Suppression (`cv::dnn::NMSBoxes`), scales the best candidate's keypoints back to crop coordinates, and maps them to full-frame space.
+  * **Fisheye Undistortion**: Corrects 2D corners for equidistant distortion using `cv::fisheye::undistortPoints` to project keypoints into pinhole space.
+  * **PnP Solving**: Resolves relative camera-to-gate rotation and translation ($R_{rel}$, $t_{rel}$) using the IPPE solver (`cv::solvePnP` with `cv::SOLVEPNP_IPPE`).
+  * **Extrinsic Fusion**: Computes the global drone pose ($p_{meas}$, $q_{meas}$) using camera-to-body extrinsics ($R_{CB}$, $t_{CB}$) and populates the `PoseMeasurement` structure.
+
+##### C. Verification Runner ([verify_pipeline.cpp](file:///home/aaron/Documents/perception/cpp_pipeline/src/verify_pipeline.cpp))
+* **`main(...)`**: Loads the camera matrix $K$ and equidistant distortion coefficients $D$. Fills the camera-to-body extrinsics $R_{CB}$ and $t_{CB}$. Loads the test frame [image_0_322.png](file:///home/aaron/Documents/perception/datasets/uzh-fpv-indoor-forward-davis3/img/image_0_322.png) containing a visible gate. Invokes `process_frame` to output the estimated drone position and orientation, and verifies `RingBuffer` interpolation.
+
+---
+
+#### 2. Compilation, Execution & Verification Guide
+
+Follow these steps to compile and verify the consolidated C++ pipeline:
+
+##### Step 1: Install Dependencies
+Ensure you have the required build tools and libraries installed on your Debian/Ubuntu system:
+```bash
+# Install CMake, compiler, OpenCV, and ONNX Runtime headers
+sudo apt-get update && sudo apt-get install -y cmake libopencv-dev libonnxruntime-dev
+
+# Install Eigen3 library (required for matrix and vector mathematics)
+sudo apt-get install -y libeigen3-dev
+```
+
+##### Step 2: Build the Project
+Configure and compile the project using CMake:
+```bash
+cd cpp_pipeline
+mkdir -p build && cd build
+cmake ..
+make -j4
+```
+This builds the static library `libperception_pipeline.a` and links it to compile the `verify_pipeline` binary.
+
+##### Step 3: Run the Verification Program
+Run the executable to run the entire pipeline on a sample image:
+```bash
+./verify_pipeline
+```
+This test:
+1. Loads the ONNX model and the sample UZH frame.
+2. Extracts 2D gate corners, undistorts them, solves PnP, and transforms them into global coordinates.
+3. Outputs the estimated drone state vector measurements.
+4. Performs verification tests on the EKF RingBuffer's SLERP interpolation.
 - [ ] **Phase 3: EKF State Fusion**
   - [ ] Implement RK4 IMU kinematics integrator.
   - [ ] Implement EKF update step with delay compensation.
