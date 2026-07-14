@@ -59,3 +59,12 @@ add_executable(verify_pipeline
 target_link_libraries(verify_pipeline PRIVATE
     perception_pipeline
 )
+
+# Build production node executable
+add_executable(perception_node
+    src/main.cpp
+)
+
+target_link_libraries(perception_node PRIVATE
+    perception_pipeline
+)

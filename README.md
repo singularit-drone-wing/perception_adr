@@ -239,9 +239,36 @@ Executes Kalman correction using delay-compensated pose measurements:
 * **Joseph-Form Covariance Update**: Ensures numerical stability and matrix symmetry:
   $$P \leftarrow (I - KH) P (I - KH)^T + K R K^T$$
   $$P \leftarrow \frac{1}{2} (P + P^T)$$
-- [ ] **Phase 4: Closed-Loop Simulation Testing**
-  - [ ] Set up UDP socket communications.
-  - [ ] Run test flights in Python simulator using C++ estimates.
+- [x] **Phase 4: Closed-Loop Simulation Testing**
+  - [x] Set up UDP socket communications.
+  - [x] Run test flights in Python simulator using C++ estimates.
+
+#### Phase 4 Technical Details
+
+We established a real-time, closed-loop simulation loop by implementing the production C++ node [main.cpp](file:///home/aaron/Documents/perception/cpp_pipeline/src/main.cpp) and a Python drone flight simulation harness [simulate_drone.py](file:///home/aaron/Documents/perception/simulation/simulate_drone.py).
+
+##### 1. Concurrent Threading Architecture
+The C++ node is structured into three asynchronous, concurrent threads to manage high-frequency inputs and heavy vision processing without blocking:
+* **Thread 2 (IMU Receiver & Predictor)**: Runs inside the main loop at the network limit. Binds to UDP port `12345`. For IMU datagrams, it runs `ekf.predict` and logs the state in the `RingBuffer`. For Camera datagrams, it dispatches the JPEG bytes to the vision queue.
+* **Thread 1 (Vision Pipeline)**: Blocks on the vision queue, decodes JPEG frames, runs YOLO-Pose, solves relative PnP with equidistant undistortion, matches the gate using closest-state nearest-gate lookup, and pushes `PoseMeasurement` to the EKF correction queue.
+* **Thread 3 (EKF Update & UDP Sender)**: Blocks on the correction queue, pops visual measurements, fetches historical latency-compensated states, runs `ekf.update`, and sends the corrected state packet back to Python over port `12346`.
+
+##### 2. Binary Packet Specifications
+To minimize serialization and parsing latency, C++ and Python communicate using packed binary structures:
+* **IMU Datagram (`packet_type == 'I'`)**: `[char type, double timestamp, double ax, ay, az, double gx, gy, gz]` (65 bytes).
+* **Camera Datagram (`packet_type == 'C'`)**: `[char type, double timestamp, uint32 size]` followed immediately by raw JPEG bytes.
+* **State Datagram (`packet_type == 'S'`)**: `[char type, double timestamp, double px, py, pz, double vx, vy, vz, double qw, qx, qy, qz, double ba_x, ba_y, ba_z, double bg_x, bg_y, bg_z]` (137 bytes).
+
+##### 3. How to Run Closed-Loop Simulation
+1. **Start C++ Node**:
+   ```bash
+   ./cpp_pipeline/build/perception_node ./weights/best.onnx 127.0.0.1
+   ```
+2. **Start Python Simulator**:
+   ```bash
+   venv/bin/python simulation/simulate_drone.py
+   ```
+The Python script will simulate a 3D circular flight, send high-frequency IMU and Camera packets, and print the converged, latency-compensated EKF state feedback received from the C++ node.
 
 ---
 
