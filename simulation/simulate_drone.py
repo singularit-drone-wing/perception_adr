@@ -135,8 +135,13 @@ def main():
 
                 states_received += 1
                 if states_received % 5 == 0:
-                    print(f"[Feedback] t={ts:.3f}s | EKF Position: [{px_est:6.3f}, {py_est:6.3f}, {pz_est:6.3f}]")
-                    print(f"            | Estimated Gyro Bias: [{bg_x:.5f}, {bg_y:.5f}, {bg_z:.5f}]")
+                    print(f"[Feedback] t={ts:.3f}s | EKF Global State Vector:")
+                    print(f"  Position (p_WB)  : [{px_est:8.4f}, {py_est:8.4f}, {pz_est:8.4f}] m")
+                    print(f"  Velocity (v_W)   : [{vx_est:8.4f}, {vy_est:8.4f}, {vz_est:8.4f}] m/s")
+                    print(f"  Attitude (q_WB)  : [{qw:8.5f}, {qx:8.5f}, {qy:8.5f}, {qz:8.5f}] (w,x,y,z)")
+                    print(f"  Acc Bias (b_a)   : [{ba_x:8.5f}, {ba_y:8.5f}, {ba_z:8.5f}] m/s²")
+                    print(f"  Gyro Bias (b_g)  : [{bg_x:8.5f}, {bg_y:8.5f}, {bg_z:8.5f}] rad/s")
+                    print("-" * 60)
         except BlockingIOError:
             pass
 

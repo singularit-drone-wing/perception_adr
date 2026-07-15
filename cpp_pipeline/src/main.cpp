@@ -11,6 +11,9 @@
 #include <unistd.h>
 #include <opencv2/highgui.hpp>
 
+// start perception_node:
+// ./cpp_pipeline/build/perception_node ./weights/best.onnx 127.0.0.1
+
 // ==========================================
 // 1. Packet Definitions
 // ==========================================
