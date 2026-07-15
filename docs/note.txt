@@ -1,0 +1,31 @@
+ ### 1. What is Implemented & Tested
+
+  The perception subsystem consists of two main parts:
+
+  • The C++ Perception Node (main.cpp):
+      • Initializes the  VisionPipeline (loading the YOLO-Pose best.onnx model, camera calibration matrices,
+      and a pre-defined track gate map).
+      • Listens for incoming high-frequency IMU and Camera packets on UDP port  12345 .
+      • Runs EKF prediction (RK4 integration) and EKF correction (Joseph-Form measurement updates with SLERP-
+      based delay compensation).
+      • Sends the resulting EKF state estimations back on UDP port  12346.
+      
+  • The Python Simulation Client (simulate_drone.py):
+      • Simulates a 3D circular flight trajectory.
+      • Packets are packed into compact binary structures and streamed to the C++ node: IMU packets at 200 Hz
+      and Camera frames (JPEG bytes) at 10 Hz.
+      • Listens for EKF state packets back from the C++ node and logs the estimated position and gyro biases
+      to verify filter convergence.
+
+  ──────
+  ### 2. How to Run the Simulator Test
+
+  You can run this test with the following commands from the repository root:
+
+  1. Start the C++ Perception Node:
+    ./cpp_pipeline/build/perception_node ./weights/best.onnx 127.0.0.1
+    This starts the multi-threaded node, initializes ONNX Runtime, and waits for incoming packets.
+  2. Start the Python Flight Simulation Harness (in a separate terminal):
+    venv/bin/python simulation/simulate_drone.py
+    This starts streaming the simulated flight data. You will see EKF position and gyro bias updates stream
+  back from the C++ node in real-time as it converges.
