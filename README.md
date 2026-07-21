@@ -349,3 +349,90 @@ python simulation/test_on_uzh.py
 ```
 * Bounding box corners and confidence metrics are logged to `simulation/runs/uzh_test_results.txt`.
 * Annotated verification frames are saved to `simulation/runs/detections/`.
+
+---
+
+## 5. Execution & Verification Report
+
+### A. C++ Standalone Verification (`verify_pipeline`)
+
+| Test | Result | Detail |
+|------|--------|--------|
+| VisionPipeline (YOLO + PnP) | PASS | Gate detected at 58.2% confidence, 6DOF pose resolved from `image_0_322.png` |
+| Gate Matching | PASS | Correct gate selected from 3-map using closest-distance lookup (threshold 15m) |
+| RingBuffer SLERP Interpolation | PASS | Query at t=100.25 → position `[1.2500, 0.0000, 0.0000]` (exact match) |
+| EKF Predict (RK4) | PASS | dt=10ms with v=0.1m/s → `[0.0010, 0.0000, 0.0010]` (correct) |
+| EKF Update (Joseph-Form) | PASS | Covariance update converged, bias corrected |
+
+### B. Python Model Validation (`test_on_uzh.py`)
+
+- **Detection rate**: 10/105 sampled frames (9.5%) on raw UZH-FPV monochrome images
+- **Max confidence**: 78.3% on `image_0_322.png`
+- **Limitation**: Model trained on synthetic RGB data; struggles with real DAVIS240C monochrome frames
+
+### C. Closed-Loop UDP Simulation (`perception_node` + `simulate_drone.py`)
+
+**Before fixes** — EKF catastrophically diverged:
+```
+t=0.200s: position [3.89, 3.74, -8.33]  (true: [2.97, 5.60, 5.10])
+t=5.000s: position [3.72, 4.43, -8.50]  (true: [0.85, 2.12, 5.60])
+```
+z-error: ~13.4m, velocity vz ≈ −10 m/s (phantom gravity acceleration)
+
+**Root causes identified & fixed:**
+
+1. **Initial state mismatch** (`cpp_pipeline/src/main.cpp`):
+   - EKF initialized with UZH-FPV ground truth pose (`pos=[7.6, 0.24, −0.75]`, non-identity quaternion) but simulator starts at `[3, 5, 5]` with identity rotation
+   - Non-identity quaternion rotated the IMU gravity vector incorrectly, producing −10 m/s² phantom z-acceleration
+   - **Fix**: Configurable initial state via CLI args; defaults to simulator starting pose when overridden
+
+2. **Body/world frame mismatch** (`simulation/simulate_drone.py`):
+   - Simulator sent world-frame acceleration assuming identity rotation
+   - EKF rotates body-frame data by `q_WB` then adds gravity: `dv = q*a + g`
+   - For a yawing circular trajectory, correct body-frame centripetal acceleration is constant
+   - **Fix**: Send body-frame accelerations directly
+
+3. **Static image gate mismatch**:
+   - Simulator sent `image_0_322.png` at 10 Hz — gate in this image is at unknown coordinates not matching the gate map
+   - PnP produced wrong position measurements, pulling EKF off trajectory
+   - **Fix**: Disabled camera frame sending (pending synthetic gate rendering)
+
+**After fixes** — EKF tracks trajectory accurately:
+
+| Time | True Position | EKF Position | Δ (cm) |
+|------|-------------|-------------|--------|
+| t=0.29s | [2.88, 5.85, 5.14] | [2.88, 5.83, 5.14] | 2 |
+| t=1.43s | [0.47, 7.92, 5.66] | [0.46, 7.97, 5.67] | 5 |
+| t=3.14s | [−3.00, 5.00, 6.00] | [−2.91, 5.09, 6.08] | 13 |
+| t=4.83s | [0.42, 2.01, 5.66] | [0.44, 2.30, 5.84] | 32 |
+
+Residual drift (32 cm over 5s) from IMU noise integration without visual corrections.
+
+### D. UZH Dataset VIO Benchmark (`replay_uzh.py`)
+
+The UZH-FPV dataset contains IMU (1 kHz), camera (43 Hz grayscale PNG), and Leica ground truth of a drone flying indoors. **No gate or track layout exists in the dataset** — gate positions are a synthetic construct in `main.cpp`.
+
+**Fixes applied:**
+1. Initial state defaults restored to UZH ground truth (`pos=[7.605, 0.241, -0.754]`, UZH quaternion)
+2. CLI args added to override initial state for simulator use
+3. VO fallback fixed: velocity-based translation scaling + camera-to-body frame transform
+4. VO thresholds loosened for low-res monochrome images (80 features @ 0.001 quality, min 5 inliers)
+
+**Results:**
+
+| Run Mode | Samples | t=0 ATE RMSE | Umeyama ATE RMSE | Notes |
+|----------|---------|-------------|-------------------|-------|
+| Before fix (1.0x) | 5366 | 2.86e15 m | 2.86e15 m | Catastrophic (initial state mismatch + wrong gate map) |
+| After fix (max speed) | 513 | 127.66 m | **83.16 m** | IMU-dominant (vision thread can't keep up) |
+| After fix (1.0x) | 8966 | 19597.99 m | 13237.17 m | VO corrections noisy on low-res images |
+
+**Analysis:**
+- The **Umeyama ATE of 83 m** at max speed is the cleanest IMU-only measurement: ~49 s of pure inertial integration with no visual corrections
+- Expected IMU drift: gyro noise → attitude error → gravity leakage → quadratic position drift of ~0.5·g·sin(σ_θ)·t² ≈ hundreds of meters over 49 s
+- At 1.0x realtime, VO produces noisy relative poses from 346×260 monochrome frames with ~5 mm baseline at 43 Hz, degrading rather than improving the estimate
+- The system is designed for **gate-based drone racing** where visual corrections bound IMU drift; without gates the benchmark measures pure IMU integration accuracy
+
+**Recommendations for improving UZH benchmark ATE:**
+- Retrain YOLO-Pose on domain-randomized monochrome + synthetic gate renders
+- Implement keypoint-based VO with temporal smoothing and outlier rejection for small-baseline motion
+- Add an initialization handshake so the replayer sends the exact starting pose before replay begins
