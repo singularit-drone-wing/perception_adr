@@ -346,17 +346,17 @@ bool VisionPipeline::track_visual_odometry(const cv::Mat& img, Eigen::Matrix3d& 
 
     if (prev_gray_.empty()) {
         prev_gray_ = curr_gray.clone();
-        cv::goodFeaturesToTrack(prev_gray_, prev_pts_, 100, 0.01, 10);
+        cv::goodFeaturesToTrack(prev_gray_, prev_pts_, 80, 0.001, 5);
         return false;
     }
 
-    if (prev_pts_.size() < 20) {
+    if (prev_pts_.size() < 15) {
         std::vector<cv::Point2f> new_pts;
-        cv::goodFeaturesToTrack(curr_gray, new_pts, 100, 0.01, 10);
+        cv::goodFeaturesToTrack(curr_gray, new_pts, 80, 0.001, 5);
         prev_pts_.insert(prev_pts_.end(), new_pts.begin(), new_pts.end());
     }
 
-    if (prev_pts_.size() < 10) {
+    if (prev_pts_.size() < 6) {
         prev_gray_ = curr_gray.clone();
         return false;
     }
@@ -377,19 +377,19 @@ bool VisionPipeline::track_visual_odometry(const cv::Mat& img, Eigen::Matrix3d& 
     prev_gray_ = curr_gray.clone();
     prev_pts_ = matched_curr;
 
-    if (matched_prev.size() < 8) {
+    if (matched_prev.size() < 6) {
         return false;
     }
 
     // Solve essential matrix using camera intrinsics
-    cv::Mat E = cv::findEssentialMat(matched_prev, matched_curr, K_, cv::RANSAC, 0.999, 1.0);
+    cv::Mat E = cv::findEssentialMat(matched_prev, matched_curr, K_, cv::RANSAC, 0.999, 0.5);
     if (E.empty() || E.rows != 3 || E.cols != 3) {
         return false;
     }
 
     cv::Mat R_mat, t_mat;
     int inliers = cv::recoverPose(E, matched_prev, matched_curr, K_, R_mat, t_mat);
-    if (inliers < 8) {
+    if (inliers < 5) {
         return false;
     }
 

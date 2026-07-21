@@ -110,15 +110,27 @@ void vision_thread_func(const std::string& model_path,
             measurement_queue.push(measurement);
         } else {
             // Continuous Visual Odometry Fallback: Track background optical flow when no gate is matched
+            static double last_vo_ts = 0;
             Eigen::Matrix3d R_vo;
             Eigen::Vector3d t_vo;
             if (pipeline->track_visual_odometry(img, R_vo, t_vo)) {
-                PoseMeasurement vo_meas;
-                vo_meas.timestamp = frame_opt->timestamp;
-                // Propagate relative optical flow step
-                Eigen::Vector3d step = cur_state.quaternion * (0.05 * t_vo);
-                if (std::isfinite(step.x()) && std::isfinite(step.y()) && std::isfinite(step.z()) && step.norm() < 5.0) {
-                    vo_meas.position = cur_state.position + step;
+                // Compute dt between frames for velocity-based translation scaling
+                double dt = frame_opt->timestamp - last_vo_ts;
+                last_vo_ts = frame_opt->timestamp;
+                if (dt <= 0.0 || dt > 0.5) dt = 0.1;
+
+                // Scale unit-norm VO translation by IMU-predicted displacement
+                double displacement = cur_state.velocity.norm() * dt;
+                if (displacement < 0.005) displacement = 0.005;
+
+                // Transform t_vo from camera frame to body frame, then to world frame
+                Eigen::Vector3d t_vo_body = R_CB.transpose() * t_vo;
+                Eigen::Vector3d step_world = cur_state.quaternion * (displacement * t_vo_body.normalized());
+
+                if (std::isfinite(step_world.x()) && std::isfinite(step_world.y()) && std::isfinite(step_world.z()) && step_world.norm() < 5.0) {
+                    PoseMeasurement vo_meas;
+                    vo_meas.timestamp = frame_opt->timestamp;
+                    vo_meas.position = cur_state.position + step_world;
                     vo_meas.quaternion = (cur_state.quaternion * Eigen::Quaterniond(R_vo)).normalized();
                     vo_meas.confidence = 0.5f;
                     measurement_queue.push(vo_meas);
@@ -238,17 +250,33 @@ int main(int argc, char** argv) {
         { Eigen::Vector3d(-5.0, 5.0, 5.0), Eigen::Quaterniond(Eigen::AngleAxisd(-M_PI / 2.0, Eigen::Vector3d::UnitZ())) }
     };
 
-    // 3. Initialize EKF initial state (matches Python flight simulator starting conditions)
-    // The simulator starts the drone at position [3, 5, 5] with identity rotation,
-    // circling CCW around [0, 5, 5] at 1 rad/s with a small z oscillation.
-    // Initial velocity at t=0: vx=-3*sin(0)=0, vy=3*cos(0)=3, vz=0.5*cos(0)=0.5
+    // 3. Initialize EKF initial state
+    // Default: UZH-FPV dataset starting ground truth pose (used by replay_uzh.py benchmark).
+    // For the flight simulator, override with CLI args: px py pz [qw qx qy qz]
     KinematicState initial_state;
-    initial_state.timestamp = 0.0;
-    initial_state.position = Eigen::Vector3d(3.0, 5.0, 5.0);
-    initial_state.velocity = Eigen::Vector3d(0.0, 3.0, 0.5);
-    initial_state.quaternion = Eigen::Quaterniond::Identity();
+    initial_state.timestamp = 1540820236.534;
+    initial_state.position = Eigen::Vector3d(7.60526198985024, 0.240529565132054, -0.754395431415226);
+    initial_state.velocity = Eigen::Vector3d(-0.012, 0.012, 0.004);
+    initial_state.quaternion = Eigen::Quaterniond(0.278314235606225, -0.269262241428808, -0.661934430325135, 0.641780212806374);
     initial_state.acc_bias = Eigen::Vector3d::Zero();
     initial_state.gyro_bias = Eigen::Vector3d::Zero();
+
+    // Override with CLI args: ./perception_node model.onnx ip [px py pz] [qw qx qy qz]
+    if (argc >= 6) {
+        initial_state.position = Eigen::Vector3d(std::atof(argv[3]), std::atof(argv[4]), std::atof(argv[5]));
+        if (argc >= 10) {
+            initial_state.quaternion = Eigen::Quaterniond(std::atof(argv[6]), std::atof(argv[7]), std::atof(argv[8]), std::atof(argv[9]));
+        } else {
+            initial_state.quaternion = Eigen::Quaterniond::Identity();
+        }
+        initial_state.velocity = Eigen::Vector3d::Zero();
+        initial_state.timestamp = 0.0;
+        std::cout << "[Main] Using CLI initial state: pos=[" << initial_state.position.x() << ","
+                  << initial_state.position.y() << "," << initial_state.position.z() << "]"
+                  << " quat=[" << initial_state.quaternion.w() << "," << initial_state.quaternion.x()
+                  << "," << initial_state.quaternion.y() << "," << initial_state.quaternion.z() << "]"
+                  << std::endl;
+    }
     ekf.set_state(initial_state);
 
     // 4. Spawn threads
