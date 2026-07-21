@@ -412,6 +412,12 @@ Residual drift (32 cm over 5s) from IMU noise integration without visual correct
 
 The UZH-FPV dataset contains IMU (1 kHz), camera (43 Hz grayscale PNG), and Leica ground truth of a drone flying indoors. **No gate or track layout exists in the dataset** — gate positions are a synthetic construct in `main.cpp`.
 
+**Data flow clarification:**
+- **Leica ground truth** is the *evaluation reference* — it is what we compare the EKF trajectory against to compute ATE after the run. The EKF never sees it during operation.
+- **Gate map** is a list of global gate positions (e.g., `gate 0 at [0, 5, 5]`). It is needed for *correction*: when YOLO-Pose detects a gate in an image, PnP gives the gate's 6DOF pose relative to the camera. Without the map, we know "the gate is 3 m in front of the camera" but not where the drone is in the world. With the map, we compute `drone_pos = gate_world_pos − R_meas × p_B_gate`.
+- On the UZH dataset without a known gate map, YOLO detections are unusable for navigation. The system falls back to KLT optical flow VO + pure IMU dead reckoning. Since VO is unreliable at this resolution and baseline, the EKF runs effectively IMU-only.
+- On the simulator with the gate map, YOLO-Pose detections are converted to global pose measurements and the EKF tracks within 32 cm over 5 s.
+
 **Fixes applied:**
 1. Initial state defaults restored to UZH ground truth (`pos=[7.605, 0.241, -0.754]`, UZH quaternion)
 2. CLI args added to override initial state for simulator use
