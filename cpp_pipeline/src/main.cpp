@@ -122,6 +122,8 @@ void ekf_update_thread_func(const std::string& python_ip) {
         running = false;
         return;
     }
+    int opt = 1;
+    setsockopt(tx_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     sockaddr_in dest_addr{};
     dest_addr.sin_family = AF_INET;
@@ -220,12 +222,12 @@ int main(int argc, char** argv) {
         { Eigen::Vector3d(-5.0, 5.0, 5.0), Eigen::Quaterniond(Eigen::AngleAxisd(-M_PI / 2.0, Eigen::Vector3d::UnitZ())) }
     };
 
-    // 3. Initialize EKF initial state
+    // 3. Initialize EKF initial state (matches UZH dataset starting ground truth pose)
     KinematicState initial_state;
-    initial_state.timestamp = 0.0;
-    initial_state.position = Eigen::Vector3d(0.0, 0.0, 0.0);
+    initial_state.timestamp = 1540820236.534;
+    initial_state.position = Eigen::Vector3d(7.60526198985024, 0.240529565132054, -0.754395431415226);
     initial_state.velocity = Eigen::Vector3d(0.0, 0.0, 0.0);
-    initial_state.quaternion = Eigen::Quaterniond::Identity();
+    initial_state.quaternion = Eigen::Quaterniond(0.278314235606225, -0.269262241428808, -0.661934430325135, 0.641780212806374);
     initial_state.acc_bias = Eigen::Vector3d::Zero();
     initial_state.gyro_bias = Eigen::Vector3d::Zero();
     ekf.set_state(initial_state);
@@ -241,6 +243,8 @@ int main(int argc, char** argv) {
         std::cerr << "[Main] Fatal: Failed to create RX socket!" << std::endl;
         running = false;
     }
+    int opt = 1;
+    setsockopt(rx_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     sockaddr_in rx_addr{};
     rx_addr.sin_family = AF_INET;
@@ -252,12 +256,21 @@ int main(int argc, char** argv) {
         running = false;
     }
 
+    // Initialize TX socket for continuous telemetry output
+    int main_tx_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    setsockopt(main_tx_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    sockaddr_in main_dest_addr{};
+    main_dest_addr.sin_family = AF_INET;
+    main_dest_addr.sin_port = htons(TX_PORT);
+    inet_pton(AF_INET, python_ip.c_str(), &main_dest_addr.sin_addr);
+
     // Set buffer size to ensure high bandwidth frames are not dropped
     int rcvbuf_size = 2 * 1024 * 1024; // 2MB
     setsockopt(rx_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size, sizeof(rcvbuf_size));
 
     std::vector<uchar> buffer(65536);
     double last_imu_time = -1.0;
+    uint64_t imu_count = 0;
 
     std::cout << "[Main] RX Listener Thread started." << std::endl;
 
@@ -288,6 +301,31 @@ int main(int argc, char** argv) {
             // Log prediction in ring buffer
             KinematicState current_state = ekf.get_state(imu->timestamp);
             ring_buffer.insert(current_state);
+
+            // Transmit state feedback telemetry every 10th IMU packet (~50 Hz)
+            imu_count++;
+            if (imu_count % 10 == 0) {
+                StatePacket packet;
+                packet.type = 'S';
+                packet.timestamp = current_state.timestamp;
+                packet.px = current_state.position.x();
+                packet.py = current_state.position.y();
+                packet.pz = current_state.position.z();
+                packet.vx = current_state.velocity.x();
+                packet.vy = current_state.velocity.y();
+                packet.vz = current_state.velocity.z();
+                packet.qw = current_state.quaternion.w();
+                packet.qx = current_state.quaternion.x();
+                packet.qy = current_state.quaternion.y();
+                packet.qz = current_state.quaternion.z();
+                packet.ba_x = current_state.acc_bias.x();
+                packet.ba_y = current_state.acc_bias.y();
+                packet.ba_z = current_state.acc_bias.z();
+                packet.bg_x = current_state.gyro_bias.x();
+                packet.bg_y = current_state.gyro_bias.y();
+                packet.bg_z = current_state.gyro_bias.z();
+                sendto(main_tx_fd, &packet, sizeof(StatePacket), 0, (struct sockaddr*)&main_dest_addr, sizeof(main_dest_addr));
+            }
 
         } else if (packet_type == 'C') {
             // Process Camera packet

@@ -83,6 +83,7 @@ graph TD
 
 #### Python Simulation & Tools (`simulation/`)
 * **`simulation/simulate_drone.py` (Flight Simulator)**: Simulates 3D drone kinematics, generates raw IMU telemetry @ 200 Hz and camera frames @ 10 Hz, streams UDP to port `12345`, and receives EKF state feedback on port `12346`.
+* **`simulation/replay_uzh.py` (Real Dataset Replayer & Ground Truth Benchmark)**: Replays real UZH dataset telemetry (`imu.txt` and `img/*.png`) over UDP to `perception_node`, comparing EKF state estimations against Leica optical ground truth (`groundtruth.txt`) and calculating position RMSE.
 * **`simulation/generate_synthetic_gates.py` (Dataset Synthesizer)**: Projects 3D gate corners onto raw UZH background frames using Kannala-Brandt lens distortion model to generate YOLO-Pose keypoint datasets.
 * **`simulation/train_yolo.py` (Training Engine)**: Trains YOLO-Pose model (`yolo11n-pose.pt`) for 30 epochs and exports graph to `weights/best.onnx`.
 * **`simulation/test_on_uzh.py` (Real-World Evaluator)**: Tests trained model on raw UZH-FPV dataset images to verify sim-to-real domain transfer.
@@ -316,13 +317,27 @@ Run the C++ node and Python flight simulator concurrently in separate terminals:
    ```
    *The Python terminal will print real-time EKF state estimations showing active filter convergence.*
 
-#### B. Standalone C++ Pipeline Verification
+#### B. Real UZH Dataset Replay & Ground Truth Evaluation
+To stream real sensor logs from `datasets/uzh-fpv-indoor-forward-davis3/` over UDP to the C++ node and evaluate EKF drift against optical Leica ground truth:
+
+1. **Terminal 1 (C++ Perception Node)**:
+   ```bash
+   ./cpp_pipeline/build/perception_node ./weights/best.onnx 127.0.0.1
+   ```
+2. **Terminal 2 (UZH Dataset Replayer)**:
+   ```bash
+   source venv/bin/activate
+   python simulation/replay_uzh.py
+   ```
+   *Streams `imu.txt` and `img/` frames over UDP and logs real-time EKF estimation error against Leica optical ground truth (`groundtruth.txt`).*
+
+#### C. Standalone C++ Pipeline Verification
 To verify keypoint extraction, PnP pose solving, and RingBuffer SLERP interpolation without network dependencies:
 ```bash
 ./cpp_pipeline/build/verify_pipeline
 ```
 
-#### C. Offline Validation on Real UZH Frames
+#### D. Offline Image Detection Validation
 To test YOLO-Pose on raw UZH-FPV camera frames:
 ```bash
 python simulation/test_on_uzh.py
