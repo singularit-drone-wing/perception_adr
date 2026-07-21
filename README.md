@@ -317,8 +317,8 @@ Run the C++ node and Python flight simulator concurrently in separate terminals:
    ```
    *The Python terminal will print real-time EKF state estimations showing active filter convergence.*
 
-#### B. Real UZH Dataset Replay & Ground Truth Evaluation
-To stream real sensor logs from `datasets/uzh-fpv-indoor-forward-davis3/` over UDP to the C++ node and evaluate EKF drift against optical Leica ground truth:
+#### B. Real UZH Dataset Replay & SE(3) Umeyama ATE Benchmark
+To stream real sensor logs from `datasets/uzh-fpv-indoor-forward-davis3/` over UDP to the C++ node and calculate standard VIO Absolute Trajectory Error (ATE RMSE) benchmark metrics:
 
 1. **Terminal 1 (C++ Perception Node)**:
    ```bash
@@ -327,9 +327,14 @@ To stream real sensor logs from `datasets/uzh-fpv-indoor-forward-davis3/` over U
 2. **Terminal 2 (UZH Dataset Replayer)**:
    ```bash
    source venv/bin/activate
-   python simulation/replay_uzh.py
+   
+   # Run at real-time 1.0x speed
+   python simulation/replay_uzh.py 1.0
+
+   # Or run at maximum throughput benchmark speed
+   python simulation/replay_uzh.py 0
    ```
-   *Streams `imu.txt` and `img/` frames over UDP and logs real-time EKF estimation error against Leica optical ground truth (`groundtruth.txt`).*
+   *Streams `imu.txt` and `img/` frames over UDP, tracks KLT optical flow background features when no gates are visible, and computes standard SE(3) Umeyama Absolute Trajectory Error (ATE RMSE) against Leica optical ground truth (`groundtruth.txt`).*
 
 #### C. Standalone C++ Pipeline Verification
 To verify keypoint extraction, PnP pose solving, and RingBuffer SLERP interpolation without network dependencies:

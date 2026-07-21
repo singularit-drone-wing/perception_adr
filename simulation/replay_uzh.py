@@ -209,9 +209,14 @@ def main():
     tx_sock.close()
     rx_sock.close()
 
-    # Convert to NumPy arrays
+    # Convert to NumPy arrays and filter valid finite samples
     est_pos_arr = np.array(est_positions)
     gt_pos_arr = np.array(gt_positions)
+
+    if len(est_pos_arr) > 0:
+        valid_mask = np.isfinite(est_pos_arr).all(axis=1) & np.isfinite(gt_pos_arr).all(axis=1)
+        est_pos_arr = est_pos_arr[valid_mask]
+        gt_pos_arr = gt_pos_arr[valid_mask]
 
     print("\n=========================================================")
     print("               VIO BENCHMARK RESULTS                     ")

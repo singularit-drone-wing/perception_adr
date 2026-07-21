@@ -108,6 +108,22 @@ void vision_thread_func(const std::string& model_path,
 
         if (matched) {
             measurement_queue.push(measurement);
+        } else {
+            // Continuous Visual Odometry Fallback: Track background optical flow when no gate is matched
+            Eigen::Matrix3d R_vo;
+            Eigen::Vector3d t_vo;
+            if (pipeline->track_visual_odometry(img, R_vo, t_vo)) {
+                PoseMeasurement vo_meas;
+                vo_meas.timestamp = frame_opt->timestamp;
+                // Propagate relative optical flow step
+                Eigen::Vector3d step = cur_state.quaternion * (0.05 * t_vo);
+                if (std::isfinite(step.x()) && std::isfinite(step.y()) && std::isfinite(step.z()) && step.norm() < 5.0) {
+                    vo_meas.position = cur_state.position + step;
+                    vo_meas.quaternion = (cur_state.quaternion * Eigen::Quaterniond(R_vo)).normalized();
+                    vo_meas.confidence = 0.5f;
+                    measurement_queue.push(vo_meas);
+                }
+            }
         }
     }
     std::cout << "[Thread-Vision] Exited." << std::endl;
@@ -226,7 +242,7 @@ int main(int argc, char** argv) {
     KinematicState initial_state;
     initial_state.timestamp = 1540820236.534;
     initial_state.position = Eigen::Vector3d(7.60526198985024, 0.240529565132054, -0.754395431415226);
-    initial_state.velocity = Eigen::Vector3d(0.0, 0.0, 0.0);
+    initial_state.velocity = Eigen::Vector3d(-0.012, 0.012, 0.004);
     initial_state.quaternion = Eigen::Quaterniond(0.278314235606225, -0.269262241428808, -0.661934430325135, 0.641780212806374);
     initial_state.acc_bias = Eigen::Vector3d::Zero();
     initial_state.gyro_bias = Eigen::Vector3d::Zero();

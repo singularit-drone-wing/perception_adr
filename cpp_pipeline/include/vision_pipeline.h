@@ -60,7 +60,14 @@ public:
         double max_match_distance,
         PoseMeasurement& measurement);
 
+    // Processes frame with KLT Optical Flow visual odometry tracking to compute frame-to-frame relative pose.
+    bool track_visual_odometry(const cv::Mat& img, Eigen::Matrix3d& R_vo, Eigen::Vector3d& t_vo);
+
 private:
+    // KLT Optical Flow state
+    cv::Mat prev_gray_;
+    std::vector<cv::Point2f> prev_pts_;
+
     // Runs preprocessing, YOLO inference, NMS, undistortion, and relative PnP solving
     bool detect_and_solve_relative_pose(const cv::Mat& crop_img,
                                         float crop_x_offset,

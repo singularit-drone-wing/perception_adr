@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Find OpenCV components
-find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d dnn highgui)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d dnn highgui video)
 message(STATUS "Found OpenCV: ${OpenCV_VERSION}")
 message(STATUS "OpenCV Include Dirs: ${OpenCV_INCLUDE_DIRS}")
 

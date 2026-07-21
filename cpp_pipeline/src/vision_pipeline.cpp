@@ -1,5 +1,6 @@
 #include "vision_pipeline.h"
 #include <opencv2/calib3d.hpp>
+#include <opencv2/video/tracking.hpp>
 #include <iostream>
 #include <stdexcept>
 #include <algorithm>
@@ -329,6 +330,75 @@ bool VisionPipeline::process_frame_with_gate_matching(
     measurement.position = best_p_meas;
     measurement.quaternion = Eigen::Quaterniond(best_R_meas).normalized();
     measurement.confidence = conf;
+
+    return true;
+}
+
+bool VisionPipeline::track_visual_odometry(const cv::Mat& img, Eigen::Matrix3d& R_vo, Eigen::Vector3d& t_vo) {
+    if (img.empty()) return false;
+
+    cv::Mat curr_gray;
+    if (img.channels() == 3) {
+        cv::cvtColor(img, curr_gray, cv::COLOR_BGR2GRAY);
+    } else {
+        curr_gray = img.clone();
+    }
+
+    if (prev_gray_.empty()) {
+        prev_gray_ = curr_gray.clone();
+        cv::goodFeaturesToTrack(prev_gray_, prev_pts_, 100, 0.01, 10);
+        return false;
+    }
+
+    if (prev_pts_.size() < 20) {
+        std::vector<cv::Point2f> new_pts;
+        cv::goodFeaturesToTrack(curr_gray, new_pts, 100, 0.01, 10);
+        prev_pts_.insert(prev_pts_.end(), new_pts.begin(), new_pts.end());
+    }
+
+    if (prev_pts_.size() < 10) {
+        prev_gray_ = curr_gray.clone();
+        return false;
+    }
+
+    std::vector<cv::Point2f> curr_pts;
+    std::vector<uchar> status;
+    std::vector<float> err;
+    cv::calcOpticalFlowPyrLK(prev_gray_, curr_gray, prev_pts_, curr_pts, status, err);
+
+    std::vector<cv::Point2f> matched_prev, matched_curr;
+    for (size_t i = 0; i < status.size(); ++i) {
+        if (status[i]) {
+            matched_prev.push_back(prev_pts_[i]);
+            matched_curr.push_back(curr_pts[i]);
+        }
+    }
+
+    prev_gray_ = curr_gray.clone();
+    prev_pts_ = matched_curr;
+
+    if (matched_prev.size() < 8) {
+        return false;
+    }
+
+    // Solve essential matrix using camera intrinsics
+    cv::Mat E = cv::findEssentialMat(matched_prev, matched_curr, K_, cv::RANSAC, 0.999, 1.0);
+    if (E.empty() || E.rows != 3 || E.cols != 3) {
+        return false;
+    }
+
+    cv::Mat R_mat, t_mat;
+    int inliers = cv::recoverPose(E, matched_prev, matched_curr, K_, R_mat, t_mat);
+    if (inliers < 8) {
+        return false;
+    }
+
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            R_vo(r, c) = R_mat.at<double>(r, c);
+        }
+    }
+    t_vo = Eigen::Vector3d(t_mat.at<double>(0), t_mat.at<double>(1), t_mat.at<double>(2));
 
     return true;
 }
