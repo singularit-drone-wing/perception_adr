@@ -238,12 +238,15 @@ int main(int argc, char** argv) {
         { Eigen::Vector3d(-5.0, 5.0, 5.0), Eigen::Quaterniond(Eigen::AngleAxisd(-M_PI / 2.0, Eigen::Vector3d::UnitZ())) }
     };
 
-    // 3. Initialize EKF initial state (matches UZH dataset starting ground truth pose)
+    // 3. Initialize EKF initial state (matches Python flight simulator starting conditions)
+    // The simulator starts the drone at position [3, 5, 5] with identity rotation,
+    // circling CCW around [0, 5, 5] at 1 rad/s with a small z oscillation.
+    // Initial velocity at t=0: vx=-3*sin(0)=0, vy=3*cos(0)=3, vz=0.5*cos(0)=0.5
     KinematicState initial_state;
-    initial_state.timestamp = 1540820236.534;
-    initial_state.position = Eigen::Vector3d(7.60526198985024, 0.240529565132054, -0.754395431415226);
-    initial_state.velocity = Eigen::Vector3d(-0.012, 0.012, 0.004);
-    initial_state.quaternion = Eigen::Quaterniond(0.278314235606225, -0.269262241428808, -0.661934430325135, 0.641780212806374);
+    initial_state.timestamp = 0.0;
+    initial_state.position = Eigen::Vector3d(3.0, 5.0, 5.0);
+    initial_state.velocity = Eigen::Vector3d(0.0, 3.0, 0.5);
+    initial_state.quaternion = Eigen::Quaterniond::Identity();
     initial_state.acc_bias = Eigen::Vector3d::Zero();
     initial_state.gyro_bias = Eigen::Vector3d::Zero();
     ekf.set_state(initial_state);

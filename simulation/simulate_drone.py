@@ -27,15 +27,12 @@ def main():
     print("Autonomous Drone Racing Python Simulator Client")
     print("=========================================")
 
-    # Load validation JPEG image
-    image_path = "datasets/uzh-fpv-indoor-forward-davis3/img/image_0_322.png"
-    if not os.path.exists(image_path):
-        print(f"Error: Test image not found at {image_path}. Please run from repository root.")
-        sys.exit(1)
-
-    with open(image_path, "rb") as f:
-        jpeg_bytes = f.read()
-    print(f"[Init] Loaded validation image ({len(jpeg_bytes)} bytes)")
+    # TODO: Render synthetic gate projections using Kannala-Brandt fisheye model
+    # to provide meaningful visual measurements. Currently, static UZH images are
+    # skipped because their gate positions don't match the C++ gate map, causing
+    # the EKF to diverge. Gate rendering should project 1.5m x 1.5m gate corners
+    # onto a blank canvas using the DAVIS240C calibration (K, D) and send as JPEG.
+    # See simulation/generate_synthetic_gates.py for the projection approach.
 
     # Set up UDP sockets
     tx_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -85,18 +82,23 @@ def main():
             py = radius * math.sin(omega * t_sim) + 5.0
             pz = 5.0 + 1.0 * math.sin(0.5 * omega * t_sim)
 
-            # Acceleration (second derivative + gravity vector in NED world)
-            # NED gravity points down, so gW = [0, 0, 9.81]. 
-            # Kinematic acceleration a_kin = d^2(p)/dt^2
-            ax_kin = -radius * (omega**2) * math.cos(omega * t_sim)
-            ay_kin = -radius * (omega**2) * math.sin(omega * t_sim)
-            az_kin = -1.0 * (0.25 * omega**2) * math.sin(0.5 * omega * t_sim)
+            # Compute body-frame acceleration using R_WB^T * (a_kin_world - g_world)
+            # The drone yaws at rate omega around z, so the centripetal acceleration
+            # is always in body -x, and y-component cancels due to matching yaw rate.
+            # a_kin_world = [-R*omega^2*cos(omega*t), -R*omega^2*sin(omega*t), -0.25*omega^2*sin(0.5*omega*t)]
+            # R_WB^T rotates a_kin_world - g_world by -omega*t around z, giving:
+            #
+            #   a_body_x = -R*omega^2                          (constant centripetal)
+            #   a_body_y = 0                                    (coriolis cancellation)
+            #   a_body_z = -0.25*omega^2*sin(0.5*omega*t) - 9.81
+            #
+            a_body_x = -radius * (omega**2)
+            a_body_y = 0.0
+            a_body_z = -1.0 * (0.25 * omega**2) * math.sin(0.5 * omega * t_sim) - 9.81
 
-            # Accelerometer measures: R_BW * (a_kin - gW) + bias + noise
-            # For simplicity, we assume R_BW is identity (or small roll/pitch)
-            ax_meas = ax_kin + true_acc_bias[0] + np.random.normal(0, 0.02)
-            ay_meas = ay_kin + true_acc_bias[1] + np.random.normal(0, 0.02)
-            az_meas = az_kin - 9.81 + true_acc_bias[2] + np.random.normal(0, 0.02) # subtracting gravity term
+            ax_meas = a_body_x + true_acc_bias[0] + np.random.normal(0, 0.02)
+            ay_meas = a_body_y + true_acc_bias[1] + np.random.normal(0, 0.02)
+            az_meas = a_body_z + true_acc_bias[2] + np.random.normal(0, 0.02)
 
             # Gyro measures: angular rates + bias + noise
             # Simple yaw rotation rate (omega = 1.0 rad/s)
@@ -112,14 +114,11 @@ def main():
             )
             tx_sock.sendto(imu_packet, ("127.0.0.1", CPP_RX_PORT))
 
-        # 2. Simulate Camera Frames (10Hz)
-        if t_now - last_cam_time >= dt_cam:
-            last_cam_time = t_now
-
-            # Pack header
-            cam_header = struct.pack(CAM_HEADER_FORMAT, b'C', t_sim, len(jpeg_bytes))
-            # Send header + JPEG payload
-            tx_sock.sendto(cam_header + jpeg_bytes, ("127.0.0.1", CPP_RX_PORT))
+        # 2. Simulate Camera Frames (10Hz) — DISABLED: see note above about synthetic gates
+        #if t_now - last_cam_time >= dt_cam:
+        #    last_cam_time = t_now
+        #    cam_header = struct.pack(CAM_HEADER_FORMAT, b'C', t_sim, len(jpeg_bytes))
+        #    tx_sock.sendto(cam_header + jpeg_bytes, ("127.0.0.1", CPP_RX_PORT))
 
         # 3. Check for EKF state feedback from C++ node
         try:
