@@ -43,17 +43,24 @@ graph TD
 ### Thread Breakdown
 
 #### Thread 1: Vision Pipeline Thread (30 - 60 Hz)
-* **Role**: Object detection and 3D visual geometry pose solving.
+* **Role**: Object detection, 3D visual geometry pose solving, and KLT optical flow VO fallback.
 * **Execution Flow**:
-  1. Blocks on the `camera_queue` waiting for incoming camera frames.
-  2. Decodes incoming raw JPEG byte payloads into `cv::Mat` BGR images.
-  3. Queries current EKF state to retrieve the drone's predicted position.
-  4. Executes **YOLO-Pose** via **ONNX Runtime** to extract 4 inner gate 2D keypoints (Top-Left, Top-Right, Bottom-Right, Bottom-Left).
-  5. Undistorts 2D keypoint coordinates using the **Kannala-Brandt (equidistant)** lens distortion model (`cv::fisheye::undistortPoints`).
-  6. Computes relative camera-to-gate transform ($R_{rel}, t_{rel}$) using **IPPE PnP** solver against known $1.5\text{m} \times 1.5\text{m}$ gate geometry.
-  7. Fuses relative transform with camera extrinsics ($R_{CB}, t_{CB}$) and known track map gate poses to transform measurements into global world coordinates.
-  8. Performs closest-state nearest-gate lookup and rejects distance outliers ($> 15\text{m}$).
-  9. Pushes validated `PoseMeasurement` ($z_{meas}$) to EKF update queue.
+   1. Blocks on the `camera_queue` waiting for incoming camera frames.
+   2. Decodes incoming raw JPEG byte payloads into `cv::Mat` BGR images.
+   3. Queries current EKF state to retrieve the drone's predicted position.
+   4. Executes **YOLO-Pose** via **ONNX Runtime** (2 CPU threads) to extract 4 inner gate 2D keypoints (Top-Left, Top-Right, Bottom-Right, Bottom-Left).
+   5. Undistorts 2D keypoint coordinates using the **Kannala-Brandt (equidistant)** lens distortion model (`cv::fisheye::undistortPoints`).
+   6. Computes relative camera-to-gate transform ($R_{rel}, t_{rel}$) using **IPPE PnP** solver against known $1.5\text{m} \times 1.5\text{m}$ gate geometry.
+   7. Fuses relative transform with camera extrinsics ($R_{CB}, t_{CB}$) and known track map gate poses to transform measurements into global world coordinates.
+   8. Performs closest-state nearest-gate lookup and rejects distance outliers ($> 15\text{m}$).
+   9. If matched, pushes global `PoseMeasurement` ($z_{meas}$) to EKF update queue.
+   10. **If unmatched (no gate detected)**: falls back to KLT optical flow VO:
+       - Extracts up to 80 Shi-Tomasi corners at quality 0.001, min distance 5 px.
+       - Tracks features via `cv::calcOpticalFlowPyrLK` between consecutive frames.
+       - Solves essential matrix with `cv::findEssentialMat` (RANSAC, threshold 0.5), recovers pose with `cv::recoverPose` (min 5 inliers).
+       - Scales unit-norm VO translation by IMU-predicted displacement: `step = q * (R_CB^T * t_vo * displacement)`.
+       - Applies sanity checks: step < 5 m, finite components, dt clamped to [0, 0.5] s.
+       - Pushes pose measurement with **confidence 0.01** (near-negligible EKF weight).
 
 #### Thread 2: Main & IMU Receiver Thread (500 - 1000 Hz)
 * **Role**: Socket broker, network datagram parsing, and high-frequency IMU state propagation.
@@ -65,25 +72,51 @@ graph TD
 #### Thread 3: EKF Update Thread (Event-Driven / ~10 Hz)
 * **Role**: Delay-compensated state correction and closed-loop feedback transmission.
 * **Execution Flow**:
-  1. Blocks on EKF update queue waiting for visual measurements from Thread 1.
-  2. Pops measurement $z_{meas}$ and queries `RingBuffer` for historical predicted state ($x_{pred}$) at capture timestamp $t_{cam}$.
-  3. Performs linear interpolation (position, velocity, biases) and Spherical Linear Interpolation (**SLERP**) (attitude quaternions) to compensate for vision processing latency.
-  4. Calculates 6D innovation residuals ($y$), Kalman Gain ($K$), and updates state variables ($p, v, q, b_a, b_g$).
-  5. Updates error-state covariance matrix $P$ using **Joseph-Form Covariance Update** to enforce matrix symmetry and positive definiteness.
-  6. Serializes corrected state variables into binary datagrams and transmits them back to Python on UDP port `12346`.
+   1. Blocks on EKF update queue waiting for visual measurements from Thread 1.
+   2. Pops measurement $z_{meas}$ and queries `RingBuffer` for historical predicted state ($x_{pred}$) at capture timestamp $t_{cam}$.
+   3. Performs linear interpolation (position, velocity, biases) and Spherical Linear Interpolation (**SLERP**) (attitude quaternions) to compensate for vision processing latency.
+   4. Calculates 6D innovation residuals ($y$), Kalman Gain ($K$), and updates state variables ($p, v, q, b_a, b_g$).
+   5. **Scales measurement noise by confidence**: `R_effective = R_base / (confidence² + 1e-6)`. Low-confidence measurements (e.g., VO at 0.01) get ~10,000× larger sigma, barely perturbing the state. Gate detections (confidence ~0.6) get ~3× larger sigma, preserving strong correction.
+   6. Updates error-state covariance matrix $P$ using **Joseph-Form Covariance Update** to enforce matrix symmetry and positive definiteness.
+   7. Serializes corrected state variables into binary datagrams and transmits them back to Python on UDP port `12346`.
+
+#### Thread 2 (Main Thread) Dual-Path State Transmission
+In addition to Thread 3's corrected-state packets, the main thread also sends **IMU-propagated prediction packets** on the same UDP port 12346 every 10th IMU cycle (~50 Hz at 500 Hz IMU). Both use identical `'S'` packet format; receivers distinguish them by timestamp inspection. This provides a high-rate (but uncorrected) position stream for applications that need lower latency than the EKF update loop.
 
 ### Codebase Structure & File References
 
 #### C++ Perception Engine (`cpp_pipeline/`)
-* **`cpp_pipeline/src/main.cpp` (Socket Broker & Thread Spawner)**: Spawns Threads 1 & 3 while executing Thread 2 on the main loop. Sets up UDP receiver sockets (port `12345`) with a 2MB socket buffer.
-* **`cpp_pipeline/include/pipeline_utils.h` (Buffers & Data Models)**: Defines `DetectionResult`, `PoseMeasurement`, `KinematicState`, `ThreadSafeQueue<T>`, and `RingBuffer` (with binary search `std::lower_bound` and SLERP interpolation).
-* **`cpp_pipeline/src/vision_pipeline.cpp` (YOLO-Pose & IPPE PnP)**: Wraps ONNX Runtime session (thread-limited to prevent CPU starvation), frame preprocessing, NMS postprocessing, Kannala-Brandt keypoint undistortion, and IPPE PnP localization.
+* **`cpp_pipeline/src/main.cpp` (Socket Broker & Thread Spawner)**: Spawns Threads 1 & 3 while executing Thread 2 on the main loop. Sets up UDP receiver sockets (port `12345`) with a 2MB socket buffer. Supports CLI arg overrides for the initial state when running with the simulator: `./perception_node model.onnx ip [px py pz] [qw qx qy qz]`. Without overrides, defaults to UZH-FPV initial pose with calibrated biases.
+* **`cpp_pipeline/include/pipeline_utils.h` (Buffers & Data Models)**: Defines `DetectionResult`, `PoseMeasurement`, `KinematicState` (with `to_vector()`/`from_vector()` serialization), `ThreadSafeQueue<T>` (blocking `pop`, non-blocking `try_pop`, `size`, `clear`), and `RingBuffer` (2 s / 2000-entry history, binary search via `std::lower_bound`, SLERP interpolation, out-of-order timestamp rejection).
+* **`cpp_pipeline/src/vision_pipeline.cpp` (YOLO-Pose, PnP, KLT VO)**: Wraps ONNX Runtime session (2 CPU threads, 320×320 inference), frame preprocessing, NMS postprocessing, Kannala-Brandt keypoint undistortion, IPPE PnP localization, and KLT optical flow VO fallback. Gate corner model: $1.5\text{m} \times 1.5\text{m}$, origin at center, Z-forward, corners ordered TL/TR/BR/BL. Hardcoded calibration: $K = [f_x=172.99, f_y=172.98, c_x=163.34, c_y=134.99]$, $D = [k_1=-0.0276, k_2=-0.00659, k_3=0.000857, k_4=-0.000309]$, $R_{CB} \approx I$, $t_{CB} = [0.00018, -0.00432, -0.02755]^\top$ m.
 * **`cpp_pipeline/src/ekf.cpp` (Extended Kalman Filter)**: Implements 16D nominal state equations, 15D error-state propagation, RK4 kinematic integration, error transition matrix $F$, discrete process noise $Q$, 6D residual calculation, and Joseph-form covariance updates.
 * **`cpp_pipeline/src/verify_pipeline.cpp` (Verification Runner)**: Standalone test script for pipeline components without network requirements.
 
+##### Hardcoded Gate Map (4-Gate Circuit)
+| Gate | Position | Orientation (Yaw) |
+|------|----------|-------------------|
+| 0 | $[0, 0, 3]^\top$ | $0^\circ$ |
+| 1 | $[5, 5, 5]^\top$ | $+90^\circ$ |
+| 2 | $[0, 10, 7]^\top$ | $+180^\circ$ |
+| 3 | $[-5, 5, 5]^\top$ | $-90^\circ$ |
+
+Outlier rejection: gates > 15 m from predicted position are discarded.
+
+##### Default Initial State (UZH-FPV Dataset)
+| Parameter | Value |
+|-----------|-------|
+| Timestamp | `1540820265.5717` |
+| Position | $[7.605, 0.241, -0.754]^\top$ |
+| Velocity | $[0, 0, 0]^\top$ |
+| Quaternion $(w, x, y, z)$ | $(0.278, -0.269, -0.662, 0.642)$ |
+| Acc bias $b_a$ | $[-0.47, 0.0, -1.23]^\top$ |
+| Gyro bias $b_g$ | $[-0.064, -0.004, -0.019]^\top$ |
+
+The simulator requires CLI overrides: `./perception_node model.onnx ip px py pz [qw qx qy qz]`.
+
 #### Python Simulation & Tools (`simulation/`)
-* **`simulation/simulate_drone.py` (Flight Simulator)**: Simulates 3D drone kinematics, generates raw IMU telemetry @ 200 Hz and camera frames @ 10 Hz, streams UDP to port `12345`, and receives EKF state feedback on port `12346`.
-* **`simulation/replay_uzh.py` (Real Dataset Replayer & Ground Truth Benchmark)**: Replays real UZH dataset telemetry (`imu.txt` and `img/*.png`) over UDP to `perception_node`, comparing EKF state estimations against Leica optical ground truth (`groundtruth.txt`) and calculating position RMSE.
+* **`simulation/simulate_drone.py` (Flight Simulator)**: Simulates 3D drone kinematics over a 5 s CCW circular trajectory (radius 3 m, $\omega = 1$ rad/s, center $[0, 5, 5]$). Generates body-frame IMU telemetry @ 200 Hz with analytic centripetal acceleration: $a_x = -R\omega^2$, $a_y = 0$, $a_z = -0.25\omega^2\sin(0.5\omega t) - 9.81$ (specific-force model). Camera frames @ 10 Hz are currently disabled (pending synthetic gate rendering). Injects true biases ($b_a = [0.01, -0.01, 0.02]$, $b_g = [0.001, -0.001, 0.002]$) and Gaussian noise ($\sigma_a = 0.02$, $\sigma_g = 0.005$). Streams UDP to port `12345` and receives EKF state feedback on port `12346`.
+* **`simulation/replay_uzh.py` (Real Dataset Replayer & Ground Truth Benchmark)**: Replays real UZH dataset telemetry (`imu.txt` and `img/*.png`) over UDP to `perception_node`, comparing EKF state estimations against Leica optical ground truth (`groundtruth.txt`) and calculating SE(3) Umeyama ATE. **Acceleration convention fix**: UZH data uses total-acceleration ($a_{meas} = a_{body} + g_{body}$), negated to match the EKF's specific-force convention ($a_{meas} = a_{body} - g_{body}$). **Stationary trimming**: events before the first GT pose are discarded to eliminate the ~29 s drift period. Computes two error metrics: origin alignment (t=0 translation only) and full SE(3) Umeyama alignment.
 * **`simulation/generate_synthetic_gates.py` (Dataset Synthesizer)**: Projects 3D gate corners onto raw UZH background frames using Kannala-Brandt lens distortion model to generate YOLO-Pose keypoint datasets.
 * **`simulation/train_yolo.py` (Training Engine)**: Trains YOLO-Pose model (`yolo11n-pose.pt`) for 30 epochs and exports graph to `weights/best.onnx`.
 * **`simulation/test_on_uzh.py` (Real-World Evaluator)**: Tests trained model on raw UZH-FPV dataset images to verify sim-to-real domain transfer.
@@ -113,6 +146,25 @@ $$\dot{q} = \frac{1}{2} q_{WB} \otimes (\omega_{raw} - b_g)$$
 * **Joseph-Form Covariance Update**:
   $$P \leftarrow (I - KH) P (I - KH)^T + K R K^T$$
   $$P \leftarrow \frac{1}{2} (P + P^T)$$
+
+#### Default Noise Parameters
+| Parameter | Symbol | Value | Units |
+|-----------|--------|-------|-------|
+| Accelerometer noise density | $\sigma_{acc}$ | 0.1 | m/s²/√Hz |
+| Gyroscope noise density | $\sigma_{gyro}$ | 0.01 | rad/s/√Hz |
+| Acc bias random walk | $\sigma_{acc\_bias}$ | 0.001 | m/s³ |
+| Gyro bias random walk | $\sigma_{gyro\_bias}$ | 0.0001 | rad/s² |
+| Measurement position std (base) | $\sigma_{meas\_pos}$ | 0.05 | m |
+| Measurement rotation std (base) | $\sigma_{meas\_rot}$ | 0.02 | rad |
+
+#### Initial Error Covariance $P_0$
+| Block | Value |
+|------|-------|
+| Position (3×3) | $0.01 \cdot I$ |
+| Velocity (3×3) | $0.1 \cdot I$ |
+| Orientation (3×3) | $0.01 \cdot I$ |
+| Acc bias (3×3) | $0.05 \cdot I$ |
+| Gyro bias (3×3) | $0.01 \cdot I$ |
 
 ---
 
