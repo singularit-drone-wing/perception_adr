@@ -417,20 +417,23 @@ The UZH-FPV dataset contains IMU (1 kHz), camera (43 Hz grayscale PNG), and Leic
 2. CLI args added to override initial state for simulator use
 3. VO fallback fixed: velocity-based translation scaling + camera-to-body frame transform
 4. VO thresholds loosened for low-res monochrome images (80 features @ 0.001 quality, min 5 inliers)
+5. UZH acceleration convention corrected: dataset uses total-acceleration (`a_meas = a_body + g_body`), negated to match EKF specific-force convention (`a_meas = a_body - g_body`)
+6. Initial biases calibrated from stationary period: `b_a = [-0.47, 0.0, -1.23]`, `b_g = [-0.064, -0.004, -0.019]`
+7. Initial state timestamp aligned to first GT pose (eliminating 29s stationary drift period)
+8. VO confidence set to 0.01 to prevent noisy essential-matrix estimates from corrupting state
 
 **Results:**
 
 | Run Mode | Samples | t=0 ATE RMSE | Umeyama ATE RMSE | Notes |
 |----------|---------|-------------|-------------------|-------|
-| Before fix (1.0x) | 5366 | 2.86e15 m | 2.86e15 m | Catastrophic (initial state mismatch + wrong gate map) |
-| After fix (max speed) | 513 | 127.66 m | **83.16 m** | IMU-dominant (vision thread can't keep up) |
-| After fix (1.0x) | 8966 | 19597.99 m | 13237.17 m | VO corrections noisy on low-res images |
+| Before fix | 5366 | 2.86e15 m | 2.86e15 m | Catastrophic (convention errors) |
+| After fix (max speed) | 916 | 1157.82 m | **809.98 m** | Sparse sampling biased to early trajectory |
+| After fix (1.0x) | 6247 | 8074.38 m | **5560.37 m** | Full 49.5s trajectory |
 
 **Analysis:**
-- The **Umeyama ATE of 83 m** at max speed is the cleanest IMU-only measurement: ~49 s of pure inertial integration with no visual corrections
-- Expected IMU drift: gyro noise → attitude error → gravity leakage → quadratic position drift of ~0.5·g·sin(σ_θ)·t² ≈ hundreds of meters over 49 s
-- At 1.0x realtime, VO produces noisy relative poses from 346×260 monochrome frames with ~5 mm baseline at 43 Hz, degrading rather than improving the estimate
-- The system is designed for **gate-based drone racing** where visual corrections bound IMU drift; without gates the benchmark measures pure IMU integration accuracy
+- The IMU noise density from Kalibr calibration (`gyroscope_noise_density = 0.05 rad/s/√Hz`) produces ~20° attitude random walk over 49.5s, projecting gravity at ~3.4 m/s² → quadratic position drift ~4 km — consistent with the 5.5 km ATE
+- At max speed, 916 captured samples concentrate in the earlier trajectory where drift hasn't accumulated, giving lower ATE
+- The system is designed for **gate-based drone racing** where YOLO-Pose gate detections bound IMU drift; without gates (or working VO on 346×260 frames with <1 cm baseline), the benchmark measures IMU integration accuracy of the MPU-9250
 
 **Recommendations for improving UZH benchmark ATE:**
 - Retrain YOLO-Pose on domain-randomized monochrome + synthetic gate renders

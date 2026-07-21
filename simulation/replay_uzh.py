@@ -132,7 +132,11 @@ def main():
 
     # Sort events by timestamp
     events.sort(key=lambda x: x[0])
-    print(f"[Init] Total timeline events queued: {len(events)} (IMU + Camera)")
+
+    # Skip stationary lead-in before first ground truth pose
+    gt_start = gt_data[0][0] if gt_data else events[0][0]
+    events = [e for e in events if e[0] >= gt_start]
+    print(f"[Init] Total timeline events queued: {len(events)} (IMU + Camera, trimmed to GT start)")
 
     # 3. Socket Configuration
     tx_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -175,6 +179,10 @@ def main():
         # Dispatch event to C++ node
         if event_type == 'IMU':
             ax, ay, az, gx, gy, gz = data
+            # UZH data uses total-acceleration convention (a_meas = a_body + g_body).
+            # EKF assumes specific-force convention (a_meas = a_body - g_body).
+            # Negate acceleration to match EKF convention.
+            ax, ay, az = -ax, -ay, -az
             imu_packet = struct.pack(
                 IMU_FORMAT, b'I', ts,
                 ax, ay, az, gx, gy, gz

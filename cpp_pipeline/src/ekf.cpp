@@ -203,9 +203,12 @@ bool EKF::update(const PoseMeasurement& measurement, const KinematicState& histo
     H.block<3, 3>(3, 6) = Eigen::Matrix3d::Identity(); // d(y_rot)/d(delta_theta)
 
     // 3. Construct measurement noise covariance matrix R (6x6)
+    // Scale by measurement confidence: low confidence → high noise → smaller Kalman gain
+    // confidence=1.0 → base sigma, confidence=0.1 → 10x sigma, confidence=0 → infinite noise (skip)
+    double conf_weight = 1.0 / (measurement.confidence * measurement.confidence + 1e-6);
     Eigen::Matrix<double, 6, 6> R = Eigen::Matrix<double, 6, 6>::Zero();
-    R.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity() * (sigma_meas_pos_ * sigma_meas_pos_);
-    R.block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() * (sigma_meas_rot_ * sigma_meas_rot_);
+    R.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity() * (sigma_meas_pos_ * sigma_meas_pos_ * conf_weight);
+    R.block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() * (sigma_meas_rot_ * sigma_meas_rot_ * conf_weight);
 
     // 4. Compute Kalman Gain K (15x6)
     Eigen::Matrix<double, 6, 6> S = H * P_ * H.transpose() + R;

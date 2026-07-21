@@ -132,7 +132,7 @@ void vision_thread_func(const std::string& model_path,
                     vo_meas.timestamp = frame_opt->timestamp;
                     vo_meas.position = cur_state.position + step_world;
                     vo_meas.quaternion = (cur_state.quaternion * Eigen::Quaterniond(R_vo)).normalized();
-                    vo_meas.confidence = 0.5f;
+                    vo_meas.confidence = 0.01f;
                     measurement_queue.push(vo_meas);
                 }
             }
@@ -254,12 +254,13 @@ int main(int argc, char** argv) {
     // Default: UZH-FPV dataset starting ground truth pose (used by replay_uzh.py benchmark).
     // For the flight simulator, override with CLI args: px py pz [qw qx qy qz]
     KinematicState initial_state;
-    initial_state.timestamp = 1540820236.534;
+    initial_state.timestamp = 1540820265.5717;
     initial_state.position = Eigen::Vector3d(7.60526198985024, 0.240529565132054, -0.754395431415226);
-    initial_state.velocity = Eigen::Vector3d(-0.012, 0.012, 0.004);
+    initial_state.velocity = Eigen::Vector3d::Zero();
     initial_state.quaternion = Eigen::Quaterniond(0.278314235606225, -0.269262241428808, -0.661934430325135, 0.641780212806374);
-    initial_state.acc_bias = Eigen::Vector3d::Zero();
-    initial_state.gyro_bias = Eigen::Vector3d::Zero();
+    // Bias calibration for UZH total-acceleration convention (negated in replayer)
+    initial_state.acc_bias = Eigen::Vector3d(-0.47, 0.0, -1.23);
+    initial_state.gyro_bias = Eigen::Vector3d(-0.0637, -0.0044, -0.0190);
 
     // Override with CLI args: ./perception_node model.onnx ip [px py pz] [qw qx qy qz]
     if (argc >= 6) {
@@ -270,6 +271,8 @@ int main(int argc, char** argv) {
             initial_state.quaternion = Eigen::Quaterniond::Identity();
         }
         initial_state.velocity = Eigen::Vector3d::Zero();
+        initial_state.acc_bias = Eigen::Vector3d::Zero();
+        initial_state.gyro_bias = Eigen::Vector3d::Zero();
         initial_state.timestamp = 0.0;
         std::cout << "[Main] Using CLI initial state: pos=[" << initial_state.position.x() << ","
                   << initial_state.position.y() << "," << initial_state.position.z() << "]"
